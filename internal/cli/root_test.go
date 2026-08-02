@@ -10,7 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sshscope/sshscope/internal/config"
+	"github.com/sshscope/sshscope/internal/probe"
 	"github.com/sshscope/sshscope/internal/report"
+	"github.com/sshscope/sshscope/internal/scheduler"
+	"github.com/sshscope/sshscope/internal/target"
 )
 
 func TestCommandTree(t *testing.T) {
@@ -131,4 +135,41 @@ func TestScanValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAppendAuthenticationProbeHonorsConfiguration(t *testing.T) {
+	gate, err := scheduler.NewConnectionGate(1000, 1)
+	if err != nil {
+		t.Fatalf("NewConnectionGate() = %v", err)
+	}
+	base := []probe.Probe{fakeNamedProbe("hostkey")}
+	tests := []struct {
+		name     string
+		enabled  bool
+		wantSize int
+		wantLast string
+	}{
+		{name: "enabled", enabled: true, wantSize: 2, wantLast: "auth"},
+		{name: "disabled", enabled: false, wantSize: 1, wantLast: "hostkey"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.AuthProbeEnabled = tt.enabled
+			got, err := appendAuthenticationProbe(base, cfg, gate)
+			if err != nil {
+				t.Fatalf("appendAuthenticationProbe() = %v", err)
+			}
+			if len(got) != tt.wantSize || got[len(got)-1].Name() != tt.wantLast {
+				t.Fatalf("pipeline size=%d last=%q", len(got), got[len(got)-1].Name())
+			}
+		})
+	}
+}
+
+type fakeNamedProbe string
+
+func (p fakeNamedProbe) Name() string { return string(p) }
+func (fakeNamedProbe) Run(context.Context, target.Target) probe.Result {
+	return probe.Result{}
 }

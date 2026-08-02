@@ -1,12 +1,12 @@
 # sshscope
 
-`sshscope` is a low-impact, black-box SSH security auditing CLI for authorized defensive assessments. The Phase 4 build resolves a bounded scope, tests TCP reachability, reads the SSH identification and initial KEXINIT proposal, collects concrete public host keys through controlled handshakes, and emits terminal or canonical JSON reports without credentials.
+`sshscope` is a low-impact, black-box SSH security auditing CLI for authorized defensive assessments. The Phase 5 build resolves a bounded scope, tests TCP reachability, reads SSH identification and KEXINIT evidence, collects public host keys, performs one optional `none` authentication-method observation, and emits terminal or canonical JSON reports without credentials.
 
 ## Authorization and safety
 
 Only scan systems you are authorized to assess. Public IP targets produce a non-interactive notice on stderr. `--authorized` and `--scope-reference` document operator intent in the report; they never bypass target limits, timeouts, connection limits, or rate controls.
 
-The project does not implement password guessing, username enumeration, credential attacks, brute force, exploitation, authentication flooding, denial-of-service checks, Internet-wide scanning, interception, or man-in-the-middle behavior. Phase 4 performs the three Phase 3 attempts plus at most eight controlled host-key handshakes selected from the server's advertised key types. RSA signature aliases are collapsed to one key family. Every host-key handshake deliberately terminates in the verified host-key callback before any user-authentication request. Retries are disabled.
+The project does not implement password guessing, username enumeration, credential attacks, brute force, exploitation, authentication flooding, denial-of-service checks, Internet-wide scanning, interception, or man-in-the-middle behavior. Phase 5 performs the three initial attempts, at most eight host-key handshakes selected from advertised key types, and at most one authentication connection per endpoint. That final connection sends exactly one standard `none` request for one configured audit username and stops before any credential-bearing method. `--no-auth-probe` omits it entirely. Retries are disabled.
 
 ## Installation and development
 
@@ -23,7 +23,7 @@ make build
 
 The direct dependencies are Cobra for CLI behavior, `golang.org/x/time/rate` for cancellation-aware global rate limiting, and `golang.org/x/crypto/ssh` for controlled SSH handshakes and OpenSSH known_hosts parsing.
 
-## Phase 4 examples
+## Phase 5 examples
 
 ```sh
 sshscope scan example.com
@@ -32,6 +32,8 @@ sshscope scan --targets targets.txt
 sshscope scan 192.0.2.0/29 --authorized --scope-reference lab-001
 sshscope scan example.com --format json --output report.json
 sshscope scan example.com --known-hosts ~/.ssh/known_hosts
+sshscope scan example.com --audit-user sshscope-audit
+sshscope scan example.com --no-auth-probe
 ```
 
 The default safety settings are 10 workers, three active connections per resolved IP, five connection starts per second, a ten-second target deadline, a four-second operation timeout, no retries, and at most 256 resolved targets. Non-bypassable ceilings cap those settings at 64 workers, 16 per-host connections, 1,000 starts per second, five minutes per target, one minute per operation, and 4,096 targets. CIDRs are rejected before expansion if they exceed the remaining scope. Target files are limited to 1 MiB and 4 KiB per line.
@@ -48,6 +50,7 @@ Cobra CLI
   -> shared rate/per-host connection gate
   -> TCP probe, SSH banner probe, bounded KEXINIT probe
   -> controlled host-key handshakes selected from KEX evidence
+  -> optional single none-authentication observation pinned to collected key
   -> evidence validation and normalization
   -> canonicalizer
   -> terminal or JSON renderer
@@ -67,11 +70,13 @@ The host-key probe consumes a defensive copy of the server's advertised host-key
 
 Without `--known-hosts`, collected keys are explicitly marked `not_checked`. With an explicitly supplied OpenSSH file, each key is classified as `match`, `mismatch`, or `new`. A mismatch is evidence for later policy evaluation, not automatic proof of interception or attack. The file is loaded once before network scanning; malformed or unreadable files fail before connections begin.
 
-## Phase 4 report schema
+The authentication probe opens one final connection only when enabled. It pins that connection to a SHA-256 host-key fingerprint collected by the preceding probe, requests SSH user authentication, sends the protocol's initial `none` method for `--audit-user`, copies the first advertised method list, and aborts through the SSH client's authentication callback. Its authentication-method list is deliberately empty, so no password, public key, keyboard-interactive response, GSSAPI token, or other credential can be submitted. If a server accepts `none`, the observation is recorded as `none` and the connection is closed without opening a channel.
+
+## Phase 5 report schema
 
 JSON is the canonical report. It includes schema/tool versions, timestamps, non-secret scan settings, authorization metadata, resolved targets, ordered probe results, normalized observations, typed errors, and complete/partial/failed status. Durations use strings such as `"4ms"`. Target, observation, probe, finding, and error collections are deterministically ordered without changing server-supplied list order.
 
-Terminal output summarizes reachability, latency, identification, advertised algorithm counts, host-key fingerprints and known_hosts states, partial-probe warnings, and finding totals. Authentication methods and policy findings are clearly marked as unavailable in Phase 4.
+Terminal output summarizes reachability, latency, identification, advertised algorithms, host-key fingerprints and known_hosts states, the audit username and initially advertised authentication methods, partial-probe warnings, and finding totals. Policy findings remain unavailable in Phase 5.
 
 ## Tests
 
@@ -82,14 +87,16 @@ make integration-test
 make fuzz FUZZTIME=10s
 ```
 
-The integration test binds an identification, KEXINIT, and signed SSH host-key fixture to `127.0.0.1` only. It verifies a known_hosts match and asserts that no server authentication callback runs. Fuzz targets cover identification, packet framing, name-lists, and KEXINIT payloads entirely in memory and perform no network operations.
+The integration test binds an identification, KEXINIT, signed host-key, and authentication fixture to `127.0.0.1` only. It verifies a known_hosts match, exactly one `none` attempt for the configured audit username, ordered method collection, and zero credential callbacks. Fuzz targets cover identification, packet framing, name-lists, and KEXINIT payloads entirely in memory and perform no network operations.
 
 ## Known limitations
 
-Phase 4 does not collect authentication methods and does not evaluate policy. The `--audit-user`, `--no-auth-probe`, `--policy`, and `--fail-on` settings are retained for the final interface but do not activate later-phase behavior yet. Banner, KEX, and host-key evidence come from separate connections, so conditional server configuration may vary between observations. Host-key collection is capped at eight distinct advertised key families; unsupported client algorithms and servers that change proposals between connections may yield partial evidence.
+Phase 5 does not evaluate policy. The `--policy` and `--fail-on` settings remain inactive until Phase 6. Banner, KEX, host-key, and authentication evidence come from separate connections, so conditional server configuration may vary between observations. Host-key collection is capped at eight distinct advertised key families; unsupported client algorithms and servers that change proposals between connections may yield partial evidence.
+
+Observed authentication methods are only the server's response to the first `none` request for one username, source address, and connection state. They may vary with `Match` rules, PAM, account state, source restrictions, or username, and they do not reveal methods offered only after a partial multi-factor success. Absence from this initial list does not prove a method is globally disabled.
 
 An unauthenticated external scanner cannot reliably determine root-login configuration, password strength, account-lockout policy, PAM details, full MFA behavior, authorized-key contents, patch/backport status, local file permissions, user privilege levels, or post-authentication restrictions.
 
-Observed authentication methods, once implemented, may depend on username, source address, PAM, conditional SSH configuration, and authentication state. A future host-key change will be reported as a change or trust-file mismatch—not automatic proof of an attack.
+A host-key change is reported as an observation or explicit trust-file mismatch—not automatic proof of an attack.
 
 See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the phased plan and current engineering risks.

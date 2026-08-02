@@ -18,6 +18,7 @@ import (
 	"github.com/sshscope/sshscope/internal/config"
 	"github.com/sshscope/sshscope/internal/evidence"
 	"github.com/sshscope/sshscope/internal/probe"
+	"github.com/sshscope/sshscope/internal/probe/auth"
 	"github.com/sshscope/sshscope/internal/probe/banner"
 	"github.com/sshscope/sshscope/internal/probe/hostkey"
 	"github.com/sshscope/sshscope/internal/probe/kex"
@@ -192,7 +193,13 @@ func newScanCommand(version string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			scanner, err := app.NewScanner(version, []probe.Probe{tcpProbe, bannerProbe, kexProbe, hostKeyProbe}, evidence.StableNormalizer{})
+			probePipeline, err := appendAuthenticationProbe(
+				[]probe.Probe{tcpProbe, bannerProbe, kexProbe, hostKeyProbe}, cfg, gate,
+			)
+			if err != nil {
+				return err
+			}
+			scanner, err := app.NewScanner(version, probePipeline, evidence.StableNormalizer{})
 			if err != nil {
 				return err
 			}
@@ -229,8 +236,8 @@ func newScanCommand(version string) *cobra.Command {
 	f.IntVar(&cfg.MaximumTargets, "max-targets", cfg.MaximumTargets, "hard target-count limit")
 	f.BoolVar(&ipv4, "ipv4", false, "resolve IPv4 addresses only")
 	f.BoolVar(&ipv6, "ipv6", false, "resolve IPv6 addresses only")
-	f.StringVar(&cfg.AuditUser, "audit-user", cfg.AuditUser, "audit username setting; authentication probe begins in Phase 5")
-	f.BoolVar(&noAuth, "no-auth-probe", false, "record authentication-method probing as disabled")
+	f.StringVar(&cfg.AuditUser, "audit-user", cfg.AuditUser, "username for the single none-authentication observation")
+	f.BoolVar(&noAuth, "no-auth-probe", false, "disable authentication-method observation")
 	f.StringVar(&cfg.KnownHostsPath, "known-hosts", "", "compare collected host keys with this OpenSSH known_hosts file")
 	f.StringVar(&cfg.PolicyPath, "policy", cfg.PolicyPath, "policy setting; evaluation begins in Phase 6")
 	f.Var(newOutputFormatValue(&cfg.OutputFormat), "format", "output format: terminal or json")
@@ -240,6 +247,18 @@ func newScanCommand(version string) *cobra.Command {
 	f.BoolVarP(&cfg.Verbose, "verbose", "v", false, "show additional operational detail")
 	f.StringVar(&failOn, "fail-on", string(cfg.FailureThreshold), "finding threshold setting; evaluation begins in Phase 6")
 	return cmd
+}
+
+func appendAuthenticationProbe(pipeline []probe.Probe, cfg config.Config, gate probe.ConnectionGate) ([]probe.Probe, error) {
+	result := append([]probe.Probe(nil), pipeline...)
+	if !cfg.AuthProbeEnabled {
+		return result, nil
+	}
+	collector, err := auth.New(cfg.ConnectionTimeout, &net.Dialer{}, gate, cfg.AuditUser)
+	if err != nil {
+		return nil, err
+	}
+	return append(result, collector), nil
 }
 
 func readTargetLines(reader io.Reader, maximumTargets int) ([]string, error) {

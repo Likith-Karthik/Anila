@@ -109,6 +109,36 @@ func TestTerminalRendererShowsHostKeyFingerprintAndTrustState(t *testing.T) {
 	}
 }
 
+func TestTerminalRendererShowsAuthenticationMethods(t *testing.T) {
+	now := time.Unix(1, 0).UTC()
+	targetResult := minimalTargetResult("192.0.2.1", now)
+	targetResult.Observations = append(targetResult.Observations, evidence.Observation{
+		ID:         evidence.ObservationAuthMethods,
+		Value:      evidence.StringsValue([]string{"publickey", "password"}),
+		Probe:      "auth",
+		ObservedAt: now,
+		Confidence: evidence.ConfidenceHigh,
+	})
+	input := Report{
+		SchemaVersion: SchemaVersion,
+		ToolVersion:   "test",
+		StartedAt:     now,
+		FinishedAt:    now,
+		Configuration: config.Default(),
+		Targets:       []TargetResult{targetResult},
+		Errors:        []probe.Error{},
+		Status:        probe.StatusComplete,
+	}
+	var output bytes.Buffer
+	if err := (TerminalRenderer{}).Render(context.Background(), &output, input); err != nil {
+		t.Fatalf("Render() = %v", err)
+	}
+	want := "Authentication methods (sshscope-audit): publickey, password"
+	if !strings.Contains(output.String(), want) {
+		t.Fatalf("terminal output %q does not contain %q", output.String(), want)
+	}
+}
+
 func minimalTargetResult(address string, observedAt time.Time) TargetResult {
 	return TargetResult{
 		Target: target.Target{

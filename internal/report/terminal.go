@@ -121,8 +121,23 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 		} else if _, err := fmt.Fprintln(writer, "  Host keys: not observed"); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(writer, "  Authentication methods: not collected in Phase 4"); err != nil {
-			return err
+		if !canonical.Configuration.AuthProbeEnabled {
+			if _, err := fmt.Fprintln(writer, "  Authentication methods: disabled"); err != nil {
+				return err
+			}
+		} else {
+			authMethods := observation(result.Observations, evidence.ObservationAuthMethods)
+			if authMethods != nil {
+				methods := strings.Join(authMethods.Value.Strings, ", ")
+				if methods == "" {
+					methods = "none advertised"
+				}
+				if _, err := fmt.Fprintf(writer, "  Authentication methods (%s): %s\n", canonical.Configuration.AuditUser, methods); err != nil {
+					return err
+				}
+			} else if _, err := fmt.Fprintln(writer, "  Authentication methods: not observed"); err != nil {
+				return err
+			}
 		}
 		for _, probeErr := range result.Errors {
 			if _, err := fmt.Fprintf(writer, "  Warning [%s/%s]: %s\n", probeErr.Probe, probeErr.Kind, probeErr.Message); err != nil {

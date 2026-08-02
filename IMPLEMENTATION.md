@@ -50,6 +50,9 @@ Presentation must not be imported by application or domain packages. Network pro
 20. Evidence-dependent probes receive defensive copies of earlier observations through an optional probe interface; the base probe contract remains usable by independent collectors.
 21. Host-key collection selects distinct key families from observed KEXINIT evidence, caps collection at eight handshakes per endpoint, and deliberately aborts from the verified host-key callback before user authentication.
 22. A missing known_hosts input is recorded as `not_checked`. An explicitly supplied file produces `match`, `mismatch`, or `new`; none of these evidence states controls handshake acceptance or assigns severity.
+23. The Phase 5 authentication connection is pinned to a SHA-256 fingerprint collected during Phase 4. A changed key stops the connection before user authentication.
+24. The SSH client's initial `none` request is the only authentication attempt. Its post-failure callback copies the server's ordered allowed-method list and returns a sentinel error; no credential-bearing `AuthMethod` is configured.
+25. If `none` succeeds, it is recorded explicitly and the authenticated transport is immediately closed without opening a channel. `--no-auth-probe` omits the probe and its connection entirely.
 
 ## Phased delivery
 
@@ -106,10 +109,14 @@ The current [`golang.org/x/crypto/ssh` public API](https://pkg.go.dev/golang.org
 
 Phase 4 uses [`ssh.NewClientConn`](https://pkg.go.dev/golang.org/x/crypto/ssh#NewClientConn) only until its [`HostKeyCallback`](https://pkg.go.dev/golang.org/x/crypto/ssh#HostKeyCallback) receives a signature-verified server key. The callback records the key and returns a sentinel error, ending the connection before the client requests user authentication. OpenSSH trust files are parsed by [`ssh/knownhosts`](https://pkg.go.dev/golang.org/x/crypto/ssh/knownhosts); `KeyError.Want` distinguishes a new host from a differing stored key.
 
-### Phase 5 — Authentication surface
+### Phase 5 — Authentication surface (complete)
 
-- [ ] Perform exactly one `none` authentication observation for one configured audit username.
-- [ ] Record advertised methods and document conditional behavior.
+- [x] Perform exactly one `none` authentication observation for one configured audit username.
+- [x] Record advertised methods and document conditional behavior.
+
+#### Phase 5 observation boundary
+
+The current [`ssh.ClientAuthCallback`](https://pkg.go.dev/golang.org/x/crypto/ssh#ClientAuthCallback) is invoked after the library's initial `none` request and exposes cloned `AllowedMethods`, `TriedMethods`, and partial-success state through [`ssh.ClientAuthContext`](https://pkg.go.dev/golang.org/x/crypto/ssh#ClientAuthContext). Phase 5 requires `TriedMethods` to be exactly `[none]`, copies the bounded allowed list, and returns an error immediately. No password, signer, keyboard-interactive callback, GSSAPI client, agent, or other authentication method is configured.
 
 ### Phase 6 — Policy engine
 
@@ -131,14 +138,15 @@ Phase 4 uses [`ssh.NewClientConn`](https://pkg.go.dev/golang.org/x/crypto/ssh#Ne
 
 ## Known limitations
 
-- Phase 4 collects advertised algorithms and concrete host keys but not authentication methods or policy findings.
+- Phase 5 collects advertised algorithms, concrete host keys, and the initial authentication-method list, but does not evaluate policy findings.
 - `report`, `compare`, and `policy validate` intentionally return a phase-pending error. Later-phase scan flags are recorded but do not activate unavailable probes or policy evaluation.
 - The module path is provisional.
 - Initial canonical sorting and deterministic JSON are implemented, but schema finalization and golden compatibility enforcement remain Phase 7 work.
 - Compact YAML scalar decoding and full one-operator-per-condition validation remain Phase 6 work.
 - `net.Resolver` materializes the operating system resolver's answer before returning it; sshscope caps all retained and copied address slices, but cannot impose an internal allocation limit on the platform resolver itself.
-- Docker-based multi-configuration OpenSSH fixtures remain later integration-hardening work; Phase 4 uses a loopback-only identification, KEXINIT, and signed host-key fixture.
+- Docker-based multi-configuration OpenSSH fixtures remain later integration-hardening work; Phase 5 uses a loopback-only identification, KEXINIT, signed host-key, and authentication fixture.
 - A banner is untrusted self-identification and cannot establish package, patch, or backport status. A timeout establishes only that one bounded attempt timed out.
 - Banner and KEXINIT observations come from separate connections; conditional server configuration or connection-specific behavior can make them differ.
 - Host-key collection is capped at eight distinct advertised key families. Algorithms unsupported by the current SSH client or keys omitted from a changed per-connection proposal are reported as partial evidence.
+- Authentication methods are conditional observations for one username, source, and initial state. Methods available only after partial success are intentionally not exercised or reported.
 - The ambient development shell has no Go binary on `PATH`; local verification currently uses a checksum-verified temporary Go 1.26.5 toolchain.
