@@ -41,6 +41,7 @@ const (
 	ErrorUnexpectedMessage  ErrorKind = "unexpected_message"
 	ErrorHandshake          ErrorKind = "handshake_error"
 	ErrorAuthProbe          ErrorKind = "auth_probe_error"
+	ErrorPolicy             ErrorKind = "policy_error"
 	ErrorRateLimited        ErrorKind = "rate_limited"
 	ErrorCancelled          ErrorKind = "cancelled"
 	ErrorUnsupported        ErrorKind = "unsupported"
@@ -83,7 +84,7 @@ func (k ErrorKind) Valid() bool {
 	case ErrorDNS, ErrorConnectionTimeout, ErrorConnectionRefused,
 		ErrorNetworkUnreachable, ErrorNetwork, ErrorProtocol, ErrorInvalidBanner,
 		ErrorInvalidPacket, ErrorUnexpectedMessage, ErrorHandshake,
-		ErrorAuthProbe, ErrorRateLimited, ErrorCancelled, ErrorUnsupported:
+		ErrorAuthProbe, ErrorPolicy, ErrorRateLimited, ErrorCancelled, ErrorUnsupported:
 		return true
 	default:
 		return false

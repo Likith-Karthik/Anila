@@ -1,6 +1,6 @@
 # sshscope
 
-`sshscope` is a low-impact, black-box SSH security auditing CLI for authorized defensive assessments. The Phase 5 build resolves a bounded scope, tests TCP reachability, reads SSH identification and KEXINIT evidence, collects public host keys, performs one optional `none` authentication-method observation, and emits terminal or canonical JSON reports without credentials.
+`sshscope` is a low-impact, black-box SSH security auditing CLI for authorized defensive assessments. The Phase 6 build resolves a bounded scope, collects SSH transport, host-key, and optional authentication-surface evidence, evaluates a strict configurable policy, and emits terminal or canonical JSON reports without credentials.
 
 ## Authorization and safety
 
@@ -21,9 +21,9 @@ make build
 ./bin/sshscope version
 ```
 
-The direct dependencies are Cobra for CLI behavior, `golang.org/x/time/rate` for cancellation-aware global rate limiting, and `golang.org/x/crypto/ssh` for controlled SSH handshakes and OpenSSH known_hosts parsing.
+The direct dependencies are Cobra for CLI behavior, `golang.org/x/time/rate` for cancellation-aware global rate limiting, `golang.org/x/crypto/ssh` for controlled SSH handshakes and OpenSSH known_hosts parsing, and `gopkg.in/yaml.v3` for strict policy decoding.
 
-## Phase 5 examples
+## Phase 6 examples
 
 ```sh
 sshscope scan example.com
@@ -34,11 +34,13 @@ sshscope scan example.com --format json --output report.json
 sshscope scan example.com --known-hosts ~/.ssh/known_hosts
 sshscope scan example.com --audit-user sshscope-audit
 sshscope scan example.com --no-auth-probe
+sshscope scan example.com --policy organization-policy.yaml
+sshscope policy validate organization-policy.yaml
 ```
 
 The default safety settings are 10 workers, three active connections per resolved IP, five connection starts per second, a ten-second target deadline, a four-second operation timeout, no retries, and at most 256 resolved targets. Non-bypassable ceilings cap those settings at 64 workers, 16 per-host connections, 1,000 starts per second, five minutes per target, one minute per operation, and 4,096 targets. CIDRs are rejected before expansion if they exceed the remaining scope. Target files are limited to 1 MiB and 4 KiB per line.
 
-Use `sshscope scan --help` for the current flag reference. `report`, `compare`, and `policy validate` remain unavailable until their implementation phases.
+Use `sshscope scan --help` for the current flag reference. `report`, `compare`, and finding-threshold exit enforcement remain unavailable until Phase 7.
 
 ## Architecture
 
@@ -52,11 +54,12 @@ Cobra CLI
   -> controlled host-key handshakes selected from KEX evidence
   -> optional single none-authentication observation pinned to collected key
   -> evidence validation and normalization
+  -> immutable policy evaluation and evidence-linked findings
   -> canonicalizer
   -> terminal or JSON renderer
 ```
 
-Network probes collect observations and typed operational errors. They never assign severity. Policy evaluation and findings begin in Phase 6.
+Network probes collect observations and typed operational errors. They never assign severity; only policy rules create findings.
 
 ## Probe behavior
 
@@ -72,11 +75,33 @@ Without `--known-hosts`, collected keys are explicitly marked `not_checked`. Wit
 
 The authentication probe opens one final connection only when enabled. It pins that connection to a SHA-256 host-key fingerprint collected by the preceding probe, requests SSH user authentication, sends the protocol's initial `none` method for `--audit-user`, copies the first advertised method list, and aborts through the SSH client's authentication callback. Its authentication-method list is deliberately empty, so no password, public key, keyboard-interactive response, GSSAPI token, or other credential can be submitted. If a server accepts `none`, the observation is recorded as `none` and the connection is closed without opening a channel.
 
-## Phase 5 report schema
+## Policy format
+
+An omitted `--policy` uses the versioned YAML ruleset embedded in the executable. A custom file replaces that default for the invocation and is loaded, bounded, validated, and compiled before target resolution or network activity. Policy files are limited to 1 MiB, one YAML document, 1,024 rules, bounded condition trees, and known schema fields; aliases and unknown observation fields are rejected.
+
+Each condition has exactly one operator. Supported operators are `equals`, `not_equals`, `contains`, `contains_any`, `contains_all`, `prefix`, `suffix`, `regex`, `exists`, `not_exists`, `greater_than`, `at_least`, `less_than`, `at_most`, `all`, `any`, and `not`. Equality operands retain YAML string, Boolean, or numeric types. String-list membership is exact; `contains` on a scalar string is substring matching. Regexes use Go's RE2 syntax.
+
+```yaml
+version: 1
+rules:
+  - id: ORG-KEX-001
+    title: Disallowed key exchange offered
+    severity: high
+    confidence: high
+    description: The server offered an algorithm disallowed by organizational policy.
+    match:
+      field: ssh.kex.algorithms
+      contains_any: [diffie-hellman-group1-sha1]
+    recommendation: Remove the disallowed algorithm from the server configuration.
+```
+
+To add a rule, copy this shape, choose a unique whitespace-free ID, reference a normalized field emitted in JSON, select one type-compatible operator, and run `sshscope policy validate POLICY.yaml`. The embedded baseline covers SSH version 1, legacy and SHA-1 algorithms, CBC and obsolete ciphers, weak host keys and MACs, small RSA keys, `none`, contextual password exposure, explicit known_hosts mismatch, and informational banner disclosure. It deliberately makes no banner-derived CVE claims and treats observed password authentication as context rather than an inherent vulnerability.
+
+## Phase 6 report schema
 
 JSON is the canonical report. It includes schema/tool versions, timestamps, non-secret scan settings, authorization metadata, resolved targets, ordered probe results, normalized observations, typed errors, and complete/partial/failed status. Durations use strings such as `"4ms"`. Target, observation, probe, finding, and error collections are deterministically ordered without changing server-supplied list order.
 
-Terminal output summarizes reachability, latency, identification, advertised algorithms, host-key fingerprints and known_hosts states, the audit username and initially advertised authentication methods, partial-probe warnings, and finding totals. Policy findings remain unavailable in Phase 5.
+Terminal output summarizes reachability, latency, identification, advertised algorithms, host-key fingerprints and known_hosts states, the audit username and initially advertised authentication methods, partial-probe warnings, and finding totals. JSON includes each policy finding with severity, confidence, evidence references, recommendation, and affected values where applicable. Detailed terminal finding presentation and schema golden compatibility remain Phase 7 work.
 
 ## Tests
 
@@ -87,11 +112,13 @@ make integration-test
 make fuzz FUZZTIME=10s
 ```
 
-The integration test binds an identification, KEXINIT, signed host-key, and authentication fixture to `127.0.0.1` only. It verifies a known_hosts match, exactly one `none` attempt for the configured audit username, ordered method collection, and zero credential callbacks. Fuzz targets cover identification, packet framing, name-lists, and KEXINIT payloads entirely in memory and perform no network operations.
+The integration test binds an identification, KEXINIT, signed host-key, and authentication fixture to `127.0.0.1` only. It verifies a known_hosts match, exactly one `none` attempt for the configured audit username, ordered method collection, zero credential callbacks, and expected embedded-policy findings. Fuzz targets cover identification, packet framing, name-lists, KEXINIT payloads, and policy YAML entirely in memory and perform no network operations.
 
 ## Known limitations
 
-Phase 5 does not evaluate policy. The `--policy` and `--fail-on` settings remain inactive until Phase 6. Banner, KEX, host-key, and authentication evidence come from separate connections, so conditional server configuration may vary between observations. Host-key collection is capped at eight distinct advertised key families; unsupported client algorithms and servers that change proposals between connections may yield partial evidence.
+`--fail-on` is validated and recorded but does not change the process exit status until Phase 7. Custom policies replace rather than merge with the embedded baseline. The baseline is conservative and cannot express every organization's cryptographic, trust, or authentication requirements.
+
+Banner, KEX, host-key, and authentication evidence come from separate connections, so conditional server configuration may vary between observations. Host-key collection is capped at eight distinct advertised key families; unsupported client algorithms and servers that change proposals between connections may yield partial evidence.
 
 Observed authentication methods are only the server's response to the first `none` request for one username, source address, and connection state. They may vary with `Match` rules, PAM, account state, source restrictions, or username, and they do not reveal methods offered only after a partial multi-factor success. Absence from this initial list does not prove a method is globally disabled.
 

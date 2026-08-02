@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/sshscope/sshscope/internal/finding"
 )
 
@@ -37,6 +39,38 @@ func BooleanScalar(value bool) Scalar {
 
 func NumberScalar(value float64) Scalar {
 	return Scalar{Kind: ScalarNumber, Number: value}
+}
+
+// UnmarshalYAML converts compact YAML scalars into the closed policy scalar
+// union. Objects, sequences, timestamps, and null are rejected.
+func (s *Scalar) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return errors.New("policy equality operand must be a scalar")
+	}
+	var decoded Scalar
+	switch node.Tag {
+	case "!!str":
+		decoded = StringScalar(node.Value)
+	case "!!bool":
+		var value bool
+		if err := node.Decode(&value); err != nil {
+			return fmt.Errorf("decode boolean policy scalar: %w", err)
+		}
+		decoded = BooleanScalar(value)
+	case "!!int", "!!float":
+		var value float64
+		if err := node.Decode(&value); err != nil {
+			return fmt.Errorf("decode numeric policy scalar: %w", err)
+		}
+		decoded = NumberScalar(value)
+	default:
+		return fmt.Errorf("unsupported YAML scalar tag %q", node.Tag)
+	}
+	if err := decoded.Validate(); err != nil {
+		return err
+	}
+	*s = decoded
+	return nil
 }
 
 // Validate rejects unknown kinds and non-finite numbers that JSON cannot

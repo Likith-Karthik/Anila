@@ -10,6 +10,7 @@ import (
 	"github.com/sshscope/sshscope/internal/config"
 	"github.com/sshscope/sshscope/internal/evidence"
 	"github.com/sshscope/sshscope/internal/finding"
+	"github.com/sshscope/sshscope/internal/policy"
 	"github.com/sshscope/sshscope/internal/probe"
 	"github.com/sshscope/sshscope/internal/report"
 	"github.com/sshscope/sshscope/internal/scheduler"
@@ -34,10 +35,11 @@ type ScanService struct {
 	version    string
 	probes     []probe.Probe
 	normalizer evidence.Normalizer
+	evaluator  policy.Evaluator
 	now        func() time.Time
 }
 
-func NewScanner(version string, probes []probe.Probe, normalizer evidence.Normalizer) (*ScanService, error) {
+func NewScanner(version string, probes []probe.Probe, normalizer evidence.Normalizer, evaluator policy.Evaluator) (*ScanService, error) {
 	if version == "" {
 		return nil, errors.New("scanner version is required")
 	}
@@ -52,7 +54,12 @@ func NewScanner(version string, probes []probe.Probe, normalizer evidence.Normal
 	if normalizer == nil {
 		return nil, errors.New("evidence normalizer is required")
 	}
-	return &ScanService{version: version, probes: append([]probe.Probe(nil), probes...), normalizer: normalizer, now: time.Now}, nil
+	if evaluator == nil {
+		return nil, errors.New("policy evaluator is required")
+	}
+	return &ScanService{
+		version: version, probes: append([]probe.Probe(nil), probes...), normalizer: normalizer, evaluator: evaluator, now: time.Now,
+	}, nil
 }
 
 func (s *ScanService) Scan(ctx context.Context, request ScanRequest) (report.Report, error) {
@@ -156,6 +163,14 @@ func (s *ScanService) scanTarget(ctx context.Context, item target.Target, timeou
 		result.Observations = []evidence.Observation{}
 	} else {
 		result.Observations = normalized
+		findings, evaluationErr := s.evaluator.Evaluate(targetCtx, result.Observations)
+		if evaluationErr != nil {
+			result.Errors = append(result.Errors, probe.Error{
+				Kind: probe.ErrorPolicy, Probe: "policy", Message: "normalized evidence could not be evaluated", Cause: evaluationErr,
+			})
+		} else {
+			result.Findings = findings
+		}
 	}
 	result.Status = targetStatus(result.ProbeResults, result.Errors)
 	return result

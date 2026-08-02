@@ -17,6 +17,7 @@ import (
 	"github.com/sshscope/sshscope/internal/app"
 	"github.com/sshscope/sshscope/internal/config"
 	"github.com/sshscope/sshscope/internal/evidence"
+	policypkg "github.com/sshscope/sshscope/internal/policy"
 	"github.com/sshscope/sshscope/internal/probe"
 	"github.com/sshscope/sshscope/internal/probe/auth"
 	"github.com/sshscope/sshscope/internal/probe/banner"
@@ -129,6 +130,14 @@ func newScanCommand(version string) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			policyDocument, err := loadPolicyDocument(cmd.Context(), cfg.PolicyPath)
+			if err != nil {
+				return err
+			}
+			policyEngine, err := policypkg.NewEngine(policyDocument)
+			if err != nil {
+				return fmt.Errorf("initialize policy: %w", err)
+			}
 			var knownHostsChecker hostkey.Checker
 			if cfg.KnownHostsPath != "" {
 				loadedChecker, loadErr := hostkey.NewKnownHostsChecker(cfg.KnownHostsPath)
@@ -199,7 +208,7 @@ func newScanCommand(version string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			scanner, err := app.NewScanner(version, probePipeline, evidence.StableNormalizer{})
+			scanner, err := app.NewScanner(version, probePipeline, evidence.StableNormalizer{}, policyEngine)
 			if err != nil {
 				return err
 			}
@@ -239,13 +248,13 @@ func newScanCommand(version string) *cobra.Command {
 	f.StringVar(&cfg.AuditUser, "audit-user", cfg.AuditUser, "username for the single none-authentication observation")
 	f.BoolVar(&noAuth, "no-auth-probe", false, "disable authentication-method observation")
 	f.StringVar(&cfg.KnownHostsPath, "known-hosts", "", "compare collected host keys with this OpenSSH known_hosts file")
-	f.StringVar(&cfg.PolicyPath, "policy", cfg.PolicyPath, "policy setting; evaluation begins in Phase 6")
+	f.StringVar(&cfg.PolicyPath, "policy", cfg.PolicyPath, "evaluate with this policy YAML; omitted uses the embedded default")
 	f.Var(newOutputFormatValue(&cfg.OutputFormat), "format", "output format: terminal or json")
 	f.StringVarP(&cfg.OutputPath, "output", "o", "", "write output to file")
 	f.BoolVar(&authorization.OperatorConfirmed, "authorized", false, "record that the operator confirms authorization")
 	f.StringVar(&authorization.ScopeReference, "scope-reference", "", "authorization or scope reference")
 	f.BoolVarP(&cfg.Verbose, "verbose", "v", false, "show additional operational detail")
-	f.StringVar(&failOn, "fail-on", string(cfg.FailureThreshold), "finding threshold setting; evaluation begins in Phase 6")
+	f.StringVar(&failOn, "fail-on", string(cfg.FailureThreshold), "finding threshold setting; exit enforcement begins in Phase 7")
 	return cmd
 }
 
@@ -356,9 +365,39 @@ func newPolicyCommand() *cobra.Command {
 		Use:   "validate POLICY.yaml",
 		Short: "Validate policy syntax and semantics",
 		Args:  cobra.ExactArgs(1),
-		RunE:  func(*cobra.Command, []string) error { return errPhasePending },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			document, err := loadPolicyDocument(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Policy valid: %d rules\n", len(document.Rules))
+			return err
+		},
 	})
 	return policy
+}
+
+func loadPolicyDocument(ctx context.Context, path string) (policypkg.Document, error) {
+	if path == "" {
+		document, err := policypkg.LoadDefault(ctx)
+		if err != nil {
+			return policypkg.Document{}, fmt.Errorf("load embedded default policy: %w", err)
+		}
+		return document, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return policypkg.Document{}, fmt.Errorf("open policy: %w", err)
+	}
+	document, loadErr := (policypkg.YAMLLoader{}).Load(ctx, file)
+	closeErr := file.Close()
+	if loadErr != nil {
+		return policypkg.Document{}, fmt.Errorf("load policy: %w", loadErr)
+	}
+	if closeErr != nil {
+		return policypkg.Document{}, fmt.Errorf("close policy: %w", closeErr)
+	}
+	return document, nil
 }
 
 func newVersionCommand(version string) *cobra.Command {

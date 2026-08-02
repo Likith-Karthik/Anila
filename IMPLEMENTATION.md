@@ -11,7 +11,7 @@
 - Probe packages collect facts and typed operational errors only. Security severity is exclusively a policy concern.
 - No probe retries are supported initially. A future retry option would require a separate safety review.
 - The default global connection-start rate is five per second. Unlike concurrency, it cannot be set to zero to disable the safety control.
-- Cobra is the sole Phase 1 dependency because the requested command tree and validation benefit from its mature flag/usage handling. YAML and SSH dependencies are deferred until code uses them.
+- Cobra is the sole Phase 1 dependency because the requested command tree and validation benefit from its mature flag/usage handling. Later phases add only `x/time/rate`, `x/crypto/ssh`, and `yaml.v3` at the points where they are used.
 - Phase 2 adds `golang.org/x/time/rate` for cancellation-aware connection-start limiting with no custom timing goroutine. YAML remains deferred. Phase 3 deliberately does not use `x/crypto/ssh` for raw KEXINIT because its public API does not expose the complete ordered proposal. Phase 4 adds `golang.org/x/crypto/ssh` for controlled signed handshakes and its `knownhosts` package for explicit trust-file comparison.
 
 ## Dependency direction
@@ -53,6 +53,9 @@ Presentation must not be imported by application or domain packages. Network pro
 23. The Phase 5 authentication connection is pinned to a SHA-256 fingerprint collected during Phase 4. A changed key stops the connection before user authentication.
 24. The SSH client's initial `none` request is the only authentication attempt. Its post-failure callback copies the server's ordered allowed-method list and returns a sentinel error; no credential-bearing `AuthMethod` is configured.
 25. If `none` succeeds, it is recorded explicitly and the authenticated transport is immediately closed without opening a channel. `--no-auth-probe` omits the probe and its connection entirely.
+26. Policy YAML is capped at 1 MiB, decoded with known-field enforcement, rejects aliases and multiple documents, and applies depth, node, rule, condition, string, and reference bounds before evaluation.
+27. Policy fields use a closed registry over normalized observation IDs and explicit host-key projections. The immutable engine is safe for concurrent target evaluation and findings always retain evidence provenance, including explicit absence provenance for absence-based rules.
+28. The default policy is YAML embedded into the executable and can be replaced per invocation with `--policy`. Policy loading and compilation complete before target resolution or network activity; finding-based exit enforcement remains a Phase 7 responsibility.
 
 ## Phased delivery
 
@@ -118,11 +121,15 @@ Phase 4 uses [`ssh.NewClientConn`](https://pkg.go.dev/golang.org/x/crypto/ssh#Ne
 
 The current [`ssh.ClientAuthCallback`](https://pkg.go.dev/golang.org/x/crypto/ssh#ClientAuthCallback) is invoked after the library's initial `none` request and exposes cloned `AllowedMethods`, `TriedMethods`, and partial-success state through [`ssh.ClientAuthContext`](https://pkg.go.dev/golang.org/x/crypto/ssh#ClientAuthContext). Phase 5 requires `TriedMethods` to be exactly `[none]`, copies the bounded allowed list, and returns an error immediately. No password, signer, keyboard-interactive callback, GSSAPI client, agent, or other authentication method is configured.
 
-### Phase 6 — Policy engine
+### Phase 6 — Policy engine (complete)
 
-- [ ] Add strict YAML loading and schema/semantic validation.
-- [ ] Implement leaf, numeric, and compound match operators.
-- [ ] Add the configurable default policy and finding tests.
+- [x] Add strict YAML loading and schema/semantic validation.
+- [x] Implement leaf, numeric, and compound match operators.
+- [x] Add the configurable default policy and finding tests.
+
+#### Phase 6 policy boundary
+
+Policies are versioned YAML documents whose conditions reference only registered normalized observation fields. Exactly one operator is permitted per condition. Regexes are compiled once when the immutable engine is constructed, and custom-policy failures stop the command before DNS or network work. The embedded default ruleset covers protocol 1, legacy/SHA-1 algorithms, CBC and obsolete ciphers, weak host keys and MACs, small RSA keys, `none`, contextual password exposure, explicit known_hosts mismatch, and informational banner disclosure without making CVE claims.
 
 ### Phase 7 — Reporting and comparison
 
@@ -138,15 +145,15 @@ The current [`ssh.ClientAuthCallback`](https://pkg.go.dev/golang.org/x/crypto/ss
 
 ## Known limitations
 
-- Phase 5 collects advertised algorithms, concrete host keys, and the initial authentication-method list, but does not evaluate policy findings.
-- `report`, `compare`, and `policy validate` intentionally return a phase-pending error. Later-phase scan flags are recorded but do not activate unavailable probes or policy evaluation.
+- Phase 6 evaluates normalized evidence and emits findings. `--fail-on` is validated and recorded, but finding-based process exit enforcement remains Phase 7 work.
+- `report` and `compare` intentionally return a phase-pending error. `policy validate` now performs the same bounded syntax and semantic validation used by scans.
 - The module path is provisional.
 - Initial canonical sorting and deterministic JSON are implemented, but schema finalization and golden compatibility enforcement remain Phase 7 work.
-- Compact YAML scalar decoding and full one-operator-per-condition validation remain Phase 6 work.
 - `net.Resolver` materializes the operating system resolver's answer before returning it; sshscope caps all retained and copied address slices, but cannot impose an internal allocation limit on the platform resolver itself.
-- Docker-based multi-configuration OpenSSH fixtures remain later integration-hardening work; Phase 5 uses a loopback-only identification, KEXINIT, signed host-key, and authentication fixture.
+- Docker-based multi-configuration OpenSSH fixtures remain later integration-hardening work; Phase 6 uses a loopback-only identification, KEXINIT, signed host-key, authentication, and default-policy fixture.
 - A banner is untrusted self-identification and cannot establish package, patch, or backport status. A timeout establishes only that one bounded attempt timed out.
 - Banner and KEXINIT observations come from separate connections; conditional server configuration or connection-specific behavior can make them differ.
 - Host-key collection is capped at eight distinct advertised key families. Algorithms unsupported by the current SSH client or keys omitted from a changed per-connection proposal are reported as partial evidence.
 - Authentication methods are conditional observations for one username, source, and initial state. Methods available only after partial success are intentionally not exercised or reported.
+- The embedded default policy is a conservative baseline, not a substitute for organization-specific cryptographic, trust, and authentication requirements. Custom policies replace rather than merge with that baseline.
 - The ambient development shell has no Go binary on `PATH`; local verification currently uses a checksum-verified temporary Go 1.26.5 toolchain.

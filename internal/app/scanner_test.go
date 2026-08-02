@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/sshscope/sshscope/internal/config"
 	"github.com/sshscope/sshscope/internal/evidence"
+	"github.com/sshscope/sshscope/internal/finding"
 	"github.com/sshscope/sshscope/internal/probe"
 	"github.com/sshscope/sshscope/internal/target"
 )
@@ -20,6 +22,14 @@ type fakeProbe struct {
 type fakeEvidenceAwareProbe struct {
 	name string
 	run  func(context.Context, target.Target, []evidence.Observation) probe.Result
+}
+
+type fakeEvaluator struct {
+	evaluate func(context.Context, []evidence.Observation) ([]finding.Finding, error)
+}
+
+func (e fakeEvaluator) Evaluate(ctx context.Context, observations []evidence.Observation) ([]finding.Finding, error) {
+	return e.evaluate(ctx, observations)
 }
 
 func (p fakeEvidenceAwareProbe) Name() string { return p.name }
@@ -48,7 +58,7 @@ func TestScanPreservesPartialProbeEvidence(t *testing.T) {
 		probeErr := probe.Error{Kind: probe.ErrorInvalidBanner, Probe: "banner", Message: "invalid banner"}
 		return probe.Result{Observations: []evidence.Observation{}, Errors: []probe.Error{probeErr}, Status: probe.StatusFailed}
 	}}
-	scanner, err := NewScanner("test", []probe.Probe{tcpProbe, bannerProbe}, evidence.StableNormalizer{})
+	scanner, err := newScannerForTest(t, []probe.Probe{tcpProbe, bannerProbe})
 	if err != nil {
 		t.Fatalf("NewScanner() = %v", err)
 	}
@@ -61,6 +71,62 @@ func TestScanPreservesPartialProbeEvidence(t *testing.T) {
 	}
 	if report.Status != probe.StatusPartial || report.Targets[0].Status != probe.StatusPartial || len(report.Targets[0].Observations) != 1 {
 		t.Fatalf("Scan() = %+v", report)
+	}
+}
+
+func TestScanEvaluatesNormalizedEvidence(t *testing.T) {
+	now := time.Unix(1, 0).UTC()
+	collector := fakeProbe{name: "tcp", run: func(context.Context, target.Target) probe.Result {
+		return probe.Result{
+			Observations: []evidence.Observation{{
+				ID: evidence.ObservationTCPReachable, Value: evidence.BooleanValue(true), Probe: "tcp",
+				ObservedAt: now, Confidence: evidence.ConfidenceHigh,
+			}},
+			Errors: []probe.Error{}, Status: probe.StatusComplete,
+		}
+	}}
+	evaluator := fakeEvaluator{evaluate: func(_ context.Context, observations []evidence.Observation) ([]finding.Finding, error) {
+		if len(observations) != 1 || observations[0].ID != evidence.ObservationTCPReachable {
+			t.Fatalf("evaluator observations = %+v", observations)
+		}
+		return []finding.Finding{{
+			RuleID: "TEST-001", Title: "Test finding", Severity: finding.SeverityInfo,
+			Confidence: finding.ConfidenceHigh, Description: "Test description",
+			Evidence:       []finding.EvidenceReference{{ObservationID: evidence.ObservationTCPReachable, Probe: "tcp"}},
+			Recommendation: "Test recommendation",
+		}}, nil
+	}}
+	scanner, err := NewScanner("test", []probe.Probe{collector}, evidence.StableNormalizer{}, evaluator)
+	if err != nil {
+		t.Fatalf("NewScanner() = %v", err)
+	}
+	scanReport, err := scanner.Scan(context.Background(), ScanRequest{Targets: []target.Target{testTarget()}, Configuration: config.Default()})
+	if err != nil {
+		t.Fatalf("Scan() = %v", err)
+	}
+	if len(scanReport.Targets[0].Findings) != 1 || scanReport.Targets[0].Findings[0].RuleID != "TEST-001" {
+		t.Fatalf("findings = %+v", scanReport.Targets[0].Findings)
+	}
+}
+
+func TestScanRecordsPolicyEvaluationFailure(t *testing.T) {
+	collector := fakeProbe{name: "tcp", run: func(context.Context, target.Target) probe.Result {
+		return probe.Result{Observations: []evidence.Observation{}, Errors: []probe.Error{}, Status: probe.StatusComplete}
+	}}
+	evaluator := fakeEvaluator{evaluate: func(context.Context, []evidence.Observation) ([]finding.Finding, error) {
+		return nil, errors.New("evaluation failed")
+	}}
+	scanner, err := NewScanner("test", []probe.Probe{collector}, evidence.StableNormalizer{}, evaluator)
+	if err != nil {
+		t.Fatalf("NewScanner() = %v", err)
+	}
+	scanReport, err := scanner.Scan(context.Background(), ScanRequest{Targets: []target.Target{testTarget()}, Configuration: config.Default()})
+	if err != nil {
+		t.Fatalf("Scan() = %v", err)
+	}
+	result := scanReport.Targets[0]
+	if result.Status != probe.StatusPartial || len(result.Errors) != 1 || result.Errors[0].Kind != probe.ErrorPolicy {
+		t.Fatalf("target result = %+v", result)
 	}
 }
 
@@ -87,7 +153,7 @@ func TestScanPassesDefensiveCopyToEvidenceAwareProbe(t *testing.T) {
 		}
 		return probe.Result{Observations: []evidence.Observation{}, Errors: []probe.Error{}, Status: probe.StatusComplete}
 	}}
-	scanner, err := NewScanner("test", []probe.Probe{kexProbe, hostKeyProbe}, evidence.StableNormalizer{})
+	scanner, err := newScannerForTest(t, []probe.Probe{kexProbe, hostKeyProbe})
 	if err != nil {
 		t.Fatalf("NewScanner() = %v", err)
 	}
@@ -110,7 +176,7 @@ func TestScanStopsAfterTCPFailure(t *testing.T) {
 		called = true
 		return probe.Result{Status: probe.StatusComplete}
 	}}
-	scanner, err := NewScanner("test", []probe.Probe{tcpProbe, bannerProbe}, evidence.StableNormalizer{})
+	scanner, err := newScannerForTest(t, []probe.Probe{tcpProbe, bannerProbe})
 	if err != nil {
 		t.Fatalf("NewScanner() = %v", err)
 	}
@@ -125,7 +191,7 @@ func TestScanStopsAfterTCPFailure(t *testing.T) {
 
 func TestScanReportsResolutionFailure(t *testing.T) {
 	unused := fakeProbe{name: "tcp", run: func(context.Context, target.Target) probe.Result { return probe.Result{} }}
-	scanner, err := NewScanner("test", []probe.Probe{unused}, evidence.StableNormalizer{})
+	scanner, err := newScannerForTest(t, []probe.Probe{unused})
 	if err != nil {
 		t.Fatalf("NewScanner() = %v", err)
 	}
@@ -147,7 +213,7 @@ func TestScanEnforcesPerTargetDeadline(t *testing.T) {
 		probeErr := probe.Error{Kind: probe.ErrorCancelled, Probe: "tcp", Message: "cancelled", Cause: ctx.Err()}
 		return probe.Result{Observations: []evidence.Observation{}, Errors: []probe.Error{probeErr}, Status: probe.StatusFailed}
 	}}
-	scanner, err := NewScanner("test", []probe.Probe{blocking}, evidence.StableNormalizer{})
+	scanner, err := newScannerForTest(t, []probe.Probe{blocking})
 	if err != nil {
 		t.Fatalf("NewScanner() = %v", err)
 	}
@@ -175,4 +241,13 @@ func testTarget() target.Target {
 		Port:       22,
 		IPVersion:  target.Version4,
 	}
+}
+
+func newScannerForTest(t *testing.T, probes []probe.Probe) (*ScanService, error) {
+	t.Helper()
+	return NewScanner("test", probes, evidence.StableNormalizer{}, fakeEvaluator{
+		evaluate: func(context.Context, []evidence.Observation) ([]finding.Finding, error) {
+			return []finding.Finding{}, nil
+		},
+	})
 }

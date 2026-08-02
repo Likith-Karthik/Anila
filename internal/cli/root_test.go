@@ -115,6 +115,57 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+func TestPolicyValidate(t *testing.T) {
+	valid := `version: 1
+rules:
+  - id: TEST-001
+    title: Test rule
+    severity: info
+    confidence: high
+    description: Test description
+    match:
+      field: ssh.protocol_version
+      equals: "2.0"
+    recommendation: Test recommendation
+`
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatalf("WriteFile() = %v", err)
+	}
+	output, err := ExecuteForTest(NewRootCommand("test"), "policy", "validate", path)
+	if err != nil {
+		t.Fatalf("policy validate = %v", err)
+	}
+	if output != "Policy valid: 1 rules\n" {
+		t.Fatalf("output = %q", output)
+	}
+}
+
+func TestPolicyValidateRejectsUnknownSchemaField(t *testing.T) {
+	invalid := `version: 1
+unknown: true
+rules: []
+`
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+		t.Fatalf("WriteFile() = %v", err)
+	}
+	_, err := ExecuteForTest(NewRootCommand("test"), "policy", "validate", path)
+	if err == nil || !strings.Contains(err.Error(), "field unknown not found") {
+		t.Fatalf("policy validate error = %v", err)
+	}
+}
+
+func TestLoadPolicyDocumentUsesEmbeddedDefault(t *testing.T) {
+	document, err := loadPolicyDocument(context.Background(), "")
+	if err != nil {
+		t.Fatalf("loadPolicyDocument() = %v", err)
+	}
+	if len(document.Rules) == 0 {
+		t.Fatal("embedded policy has no rules")
+	}
+}
+
 func TestScanValidation(t *testing.T) {
 	tests := []struct {
 		name string
