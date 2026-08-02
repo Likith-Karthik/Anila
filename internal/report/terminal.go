@@ -99,6 +99,30 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 		} else if _, err := fmt.Fprintln(writer, "  Algorithms: not observed"); err != nil {
 			return err
 		}
+		cipherClient := observation(result.Observations, evidence.ObservationCiphersClientToServer)
+		cipherServer := observation(result.Observations, evidence.ObservationCiphersServerToClient)
+		macClient := observation(result.Observations, evidence.ObservationMACsClientToServer)
+		macServer := observation(result.Observations, evidence.ObservationMACsServerToClient)
+		if cipherClient != nil && cipherServer != nil && macClient != nil && macServer != nil {
+			if _, err := fmt.Fprintf(writer, "  Transport algorithms: ciphers=%d/%d macs=%d/%d (client/server directions)\n",
+				len(cipherClient.Value.Strings), len(cipherServer.Value.Strings), len(macClient.Value.Strings), len(macServer.Value.Strings)); err != nil {
+				return err
+			}
+			if canonical.Configuration.Verbose {
+				if _, err := fmt.Fprintf(writer, "    Ciphers client-to-server: %s\n", strings.Join(cipherClient.Value.Strings, ", ")); err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintf(writer, "    Ciphers server-to-client: %s\n", strings.Join(cipherServer.Value.Strings, ", ")); err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintf(writer, "    MACs client-to-server: %s\n", strings.Join(macClient.Value.Strings, ", ")); err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintf(writer, "    MACs server-to-client: %s\n", strings.Join(macServer.Value.Strings, ", ")); err != nil {
+					return err
+				}
+			}
+		}
 		hostKeys := observation(result.Observations, evidence.ObservationHostKeys)
 		if hostKeys != nil {
 			for _, key := range hostKeys.Value.HostKeys {
@@ -163,9 +187,74 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 			totals[item.Severity]++
 		}
 	}
-	_, err = fmt.Fprintf(writer, "\nFindings: critical=%d high=%d medium=%d low=%d info=%d\n",
+	if _, err := fmt.Fprintln(writer, "\nFindings by severity:"); err != nil {
+		return err
+	}
+	if totalFindings(totals) == 0 {
+		if _, err := fmt.Fprintln(writer, "  None"); err != nil {
+			return err
+		}
+	} else {
+		for _, severity := range []finding.Severity{
+			finding.SeverityCritical, finding.SeverityHigh, finding.SeverityMedium, finding.SeverityLow, finding.SeverityInfo,
+		} {
+			if totals[severity] == 0 {
+				continue
+			}
+			if _, err := fmt.Fprintf(writer, "  %s (%d)\n", strings.ToUpper(string(severity)), totals[severity]); err != nil {
+				return err
+			}
+			for _, result := range canonical.Targets {
+				for _, item := range result.Findings {
+					if item.Severity != severity {
+						continue
+					}
+					if _, err := fmt.Fprintf(writer, "    [%s] %s — %s\n", item.RuleID, item.Title, result.Target.Endpoint()); err != nil {
+						return err
+					}
+					if _, err := fmt.Fprintf(writer, "      %s\n      Recommendation: %s\n", item.Description, item.Recommendation); err != nil {
+						return err
+					}
+					if len(item.AffectedValues) > 0 {
+						if _, err := fmt.Fprintf(writer, "      Affected: %s\n", strings.Join(item.AffectedValues, ", ")); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+	}
+	if _, err = fmt.Fprintf(writer, "Severity totals: critical=%d high=%d medium=%d low=%d info=%d\n",
 		totals[finding.SeverityCritical], totals[finding.SeverityHigh], totals[finding.SeverityMedium],
-		totals[finding.SeverityLow], totals[finding.SeverityInfo])
+		totals[finding.SeverityLow], totals[finding.SeverityInfo]); err != nil {
+		return err
+	}
+	return renderExitExplanation(writer, canonical)
+}
+
+func totalFindings(totals map[finding.Severity]int) int {
+	return totals[finding.SeverityCritical] + totals[finding.SeverityHigh] + totals[finding.SeverityMedium] +
+		totals[finding.SeverityLow] + totals[finding.SeverityInfo]
+}
+
+func renderExitExplanation(writer io.Writer, input Report) error {
+	if input.Status == probe.StatusFailed {
+		_, err := fmt.Fprintln(writer, "Exit status: 3 — scan could not be meaningfully completed")
+		return err
+	}
+	matched, err := FindingsMeetThreshold(input)
+	if err != nil {
+		return err
+	}
+	if matched {
+		_, err = fmt.Fprintf(writer, "Exit status: 1 — findings met the %s failure threshold\n", input.Configuration.FailureThreshold)
+		return err
+	}
+	if input.Configuration.FailureThreshold == "never" {
+		_, err = fmt.Fprintln(writer, "Exit status: 0 — finding threshold disabled")
+		return err
+	}
+	_, err = fmt.Fprintf(writer, "Exit status: 0 — no findings met the %s failure threshold\n", input.Configuration.FailureThreshold)
 	return err
 }
 

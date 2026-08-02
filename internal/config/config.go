@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -212,7 +213,9 @@ func (c Config) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON parses the canonical report representation of configuration.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	var encoded jsonConfig
-	if err := json.Unmarshal(data, &encoded); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&encoded); err != nil {
 		return fmt.Errorf("decode scan configuration: %w", err)
 	}
 	targetTimeout, err := time.ParseDuration(encoded.TargetTimeout)

@@ -1,6 +1,6 @@
 # sshscope
 
-`sshscope` is a low-impact, black-box SSH security auditing CLI for authorized defensive assessments. The Phase 6 build resolves a bounded scope, collects SSH transport, host-key, and optional authentication-surface evidence, evaluates a strict configurable policy, and emits terminal or canonical JSON reports without credentials.
+`sshscope` is a low-impact, black-box SSH security auditing CLI for authorized defensive assessments. The Phase 7 build resolves a bounded scope, collects SSH transport, host-key, and optional authentication-surface evidence, evaluates a strict configurable policy, emits deterministic reports, and compares saved results without credentials.
 
 ## Authorization and safety
 
@@ -23,7 +23,7 @@ make build
 
 The direct dependencies are Cobra for CLI behavior, `golang.org/x/time/rate` for cancellation-aware global rate limiting, `golang.org/x/crypto/ssh` for controlled SSH handshakes and OpenSSH known_hosts parsing, and `gopkg.in/yaml.v3` for strict policy decoding.
 
-## Phase 6 examples
+## Phase 7 examples
 
 ```sh
 sshscope scan example.com
@@ -35,12 +35,16 @@ sshscope scan example.com --known-hosts ~/.ssh/known_hosts
 sshscope scan example.com --audit-user sshscope-audit
 sshscope scan example.com --no-auth-probe
 sshscope scan example.com --policy organization-policy.yaml
+sshscope scan example.com --fail-on medium
 sshscope policy validate organization-policy.yaml
+sshscope report report.json
+sshscope report report.json --format json --output canonical.json
+sshscope compare previous.json current.json
 ```
 
 The default safety settings are 10 workers, three active connections per resolved IP, five connection starts per second, a ten-second target deadline, a four-second operation timeout, no retries, and at most 256 resolved targets. Non-bypassable ceilings cap those settings at 64 workers, 16 per-host connections, 1,000 starts per second, five minutes per target, one minute per operation, and 4,096 targets. CIDRs are rejected before expansion if they exceed the remaining scope. Target files are limited to 1 MiB and 4 KiB per line.
 
-Use `sshscope scan --help` for the current flag reference. `report`, `compare`, and finding-threshold exit enforcement remain unavailable until Phase 7.
+Use `sshscope scan --help` for the current flag reference. Finding thresholds support `critical`, `high`, `medium`, and `never`.
 
 ## Architecture
 
@@ -97,11 +101,27 @@ rules:
 
 To add a rule, copy this shape, choose a unique whitespace-free ID, reference a normalized field emitted in JSON, select one type-compatible operator, and run `sshscope policy validate POLICY.yaml`. The embedded baseline covers SSH version 1, legacy and SHA-1 algorithms, CBC and obsolete ciphers, weak host keys and MACs, small RSA keys, `none`, contextual password exposure, explicit known_hosts mismatch, and informational banner disclosure. It deliberately makes no banner-derived CVE claims and treats observed password authentication as context rather than an inherent vulnerability.
 
-## Phase 6 report schema
+## Phase 7 report schema and exits
 
-JSON is the canonical report. It includes schema/tool versions, timestamps, non-secret scan settings, authorization metadata, resolved targets, ordered probe results, normalized observations, typed errors, and complete/partial/failed status. Durations use strings such as `"4ms"`. Target, observation, probe, finding, and error collections are deterministically ordered without changing server-supplied list order.
+JSON schema version `1` is the canonical report. It includes schema/tool versions, timestamps, non-secret scan settings, authorization metadata, resolved targets, ordered probe results, normalized observations, findings, typed errors, and complete/partial/failed status. Durations use strings such as `"4ms"`. Target, observation, probe, concrete host-key, finding, evidence-reference, and error collections are deterministically ordered without changing server-supplied algorithm preference lists.
 
-Terminal output summarizes reachability, latency, identification, advertised algorithms, host-key fingerprints and known_hosts states, the audit username and initially advertised authentication methods, partial-probe warnings, and finding totals. JSON includes each policy finding with severity, confidence, evidence references, recommendation, and affected values where applicable. Detailed terminal finding presentation and schema golden compatibility remain Phase 7 work.
+Saved reports are limited to 64 MiB and loaded with unknown-field rejection, single-JSON-value enforcement, schema and domain validation, duplicate endpoint/observation/finding checks, and finding-evidence provenance validation. `sshscope report` renders a saved report as terminal output or canonical JSON.
+
+Terminal output summarizes collected evidence, groups findings by severity, includes recommendations and affected values, reports severity totals, and explains the applicable process result:
+
+- `0`: the scan completed meaningfully and no finding met the configured threshold.
+- `1`: at least one finding met the configured threshold.
+- `2`: command, configuration, policy, or report input was invalid.
+- `3`: the scan or output operation could not be meaningfully completed.
+- `130`: execution was interrupted.
+
+Failed-scan exit 3 takes precedence over findings. Output is written before a finding-related exit 1 is returned, so automation can retain the report that explains the failure. `sshscope report` reproduces the saved report's threshold outcome.
+
+## Report comparison
+
+`sshscope compare OLD.json NEW.json` shows added and removed targets, host-key changes, added and removed algorithms, new and resolved findings, finding-severity changes, authentication-method changes, and banner changes. Targets are matched by resolved endpoint; algorithm and authentication lists are compared as sets, so server preference reordering alone is not reported as an addition or removal.
+
+When either report lacks a relevant observation, comparison does not claim that values were removed. Banner text remains untrusted self-identification, and host-key changes are reported as changes rather than automatic evidence of an attack.
 
 ## Tests
 
@@ -112,11 +132,11 @@ make integration-test
 make fuzz FUZZTIME=10s
 ```
 
-The integration test binds an identification, KEXINIT, signed host-key, and authentication fixture to `127.0.0.1` only. It verifies a known_hosts match, exactly one `none` attempt for the configured audit username, ordered method collection, zero credential callbacks, and expected embedded-policy findings. Fuzz targets cover identification, packet framing, name-lists, KEXINIT payloads, and policy YAML entirely in memory and perform no network operations.
+The integration test binds an identification, KEXINIT, signed host-key, and authentication fixture to `127.0.0.1` only. It verifies a known_hosts match, exactly one `none` attempt for the configured audit username, ordered method collection, zero credential callbacks, expected embedded-policy findings, saved-report rendering, and a no-change comparison. Golden and shuffled-input tests protect deterministic schema-version-1 JSON. Fuzz targets cover identification, packet framing, name-lists, KEXINIT payloads, and policy YAML entirely in memory and perform no network operations.
 
 ## Known limitations
 
-`--fail-on` is validated and recorded but does not change the process exit status until Phase 7. Custom policies replace rather than merge with the embedded baseline. The baseline is conservative and cannot express every organization's cryptographic, trust, or authentication requirements.
+Custom policies replace rather than merge with the embedded baseline. The baseline is conservative and cannot express every organization's cryptographic, trust, or authentication requirements. Comparison output is currently terminal-only; there is no committed machine-readable comparison schema.
 
 Banner, KEX, host-key, and authentication evidence come from separate connections, so conditional server configuration may vary between observations. Host-key collection is capped at eight distinct advertised key families; unsupported client algorithms and servers that change proposals between connections may yield partial evidence.
 
@@ -125,5 +145,7 @@ Observed authentication methods are only the server's response to the first `non
 An unauthenticated external scanner cannot reliably determine root-login configuration, password strength, account-lockout policy, PAM details, full MFA behavior, authorized-key contents, patch/backport status, local file permissions, user privilege levels, or post-authentication restrictions.
 
 A host-key change is reported as an observation or explicit trust-file mismatch—not automatic proof of an attack.
+
+Comparison suppresses apparent removals when either side lacks the corresponding observation. This avoids turning incomplete evidence into a configuration claim, but it means drift is visible only when both reports contain comparable evidence.
 
 See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the phased plan and current engineering risks.

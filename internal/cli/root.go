@@ -37,11 +37,6 @@ const (
 	ExitInterrupted  = 130
 )
 
-var errPhasePending = WithExitCode(
-	ExitScanFailed,
-	errors.New("command is not available until its implementation phase is complete"),
-)
-
 const (
 	maximumTargetFileBytes = 1 << 20
 	maximumTargetLineBytes = 4096
@@ -228,10 +223,7 @@ func newScanCommand(version string) *cobra.Command {
 			if err := renderOutput(cmd.Context(), cmd.OutOrStdout(), cfg.OutputPath, renderer, scanReport); err != nil {
 				return WithExitCode(ExitScanFailed, fmt.Errorf("write report: %w", err))
 			}
-			if scanReport.Status == probe.StatusFailed {
-				return WithExitCode(ExitScanFailed, errors.New("scan could not be meaningfully completed"))
-			}
-			return nil
+			return scanResultError(scanReport)
 		},
 	}
 	f := cmd.Flags()
@@ -254,7 +246,7 @@ func newScanCommand(version string) *cobra.Command {
 	f.BoolVar(&authorization.OperatorConfirmed, "authorized", false, "record that the operator confirms authorization")
 	f.StringVar(&authorization.ScopeReference, "scope-reference", "", "authorization or scope reference")
 	f.BoolVarP(&cfg.Verbose, "verbose", "v", false, "show additional operational detail")
-	f.StringVar(&failOn, "fail-on", string(cfg.FailureThreshold), "finding threshold setting; exit enforcement begins in Phase 7")
+	f.StringVar(&failOn, "fail-on", string(cfg.FailureThreshold), "return exit 1 for findings at or above: critical, high, medium, or never")
 	return cmd
 }
 
@@ -341,13 +333,47 @@ func renderOutput(ctx context.Context, stdout io.Writer, outputPath string, rend
 	return nil
 }
 
-func newReportCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "report REPORT.json",
-		Short: "Render a canonical JSON report",
-		Args:  cobra.ExactArgs(1),
-		RunE:  func(*cobra.Command, []string) error { return errPhasePending },
+func scanResultError(scanReport report.Report) error {
+	if scanReport.Status == probe.StatusFailed {
+		return WithExitCode(ExitScanFailed, errors.New("scan could not be meaningfully completed"))
 	}
+	thresholdMet, err := report.FindingsMeetThreshold(scanReport)
+	if err != nil {
+		return WithExitCode(ExitScanFailed, fmt.Errorf("evaluate finding threshold: %w", err))
+	}
+	if thresholdMet {
+		return WithExitCode(ExitFindings, fmt.Errorf(
+			"findings met the %s failure threshold", scanReport.Configuration.FailureThreshold,
+		))
+	}
+	return nil
+}
+
+func newReportCommand() *cobra.Command {
+	format := config.OutputTerminal
+	var outputPath string
+	cmd := &cobra.Command{
+		Use:   "report REPORT.json",
+		Short: "Render a saved canonical JSON report",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			scanReport, err := loadReportFile(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			var renderer report.Renderer = report.TerminalRenderer{}
+			if format == config.OutputJSON {
+				renderer = report.JSONRenderer{}
+			}
+			if err := renderOutput(cmd.Context(), cmd.OutOrStdout(), outputPath, renderer, scanReport); err != nil {
+				return WithExitCode(ExitScanFailed, fmt.Errorf("write report: %w", err))
+			}
+			return scanResultError(scanReport)
+		},
+	}
+	cmd.Flags().Var(newOutputFormatValue(&format), "format", "output format: terminal or json")
+	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "write output to file")
+	return cmd
 }
 
 func newCompareCommand() *cobra.Command {
@@ -355,7 +381,24 @@ func newCompareCommand() *cobra.Command {
 		Use:   "compare OLD.json NEW.json",
 		Short: "Compare two canonical reports",
 		Args:  cobra.ExactArgs(2),
-		RunE:  func(*cobra.Command, []string) error { return errPhasePending },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			before, err := loadReportFile(cmd.Context(), args[0])
+			if err != nil {
+				return fmt.Errorf("load old report: %w", err)
+			}
+			after, err := loadReportFile(cmd.Context(), args[1])
+			if err != nil {
+				return fmt.Errorf("load new report: %w", err)
+			}
+			comparison, err := (app.SemanticComparer{}).Compare(cmd.Context(), before, after)
+			if err != nil {
+				return fmt.Errorf("compare reports: %w", err)
+			}
+			if err := renderComparison(cmd.Context(), cmd.OutOrStdout(), comparison); err != nil {
+				return WithExitCode(ExitScanFailed, fmt.Errorf("write comparison: %w", err))
+			}
+			return nil
+		},
 	}
 }
 
@@ -398,6 +441,22 @@ func loadPolicyDocument(ctx context.Context, path string) (policypkg.Document, e
 		return policypkg.Document{}, fmt.Errorf("close policy: %w", closeErr)
 	}
 	return document, nil
+}
+
+func loadReportFile(ctx context.Context, path string) (report.Report, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return report.Report{}, fmt.Errorf("open report: %w", err)
+	}
+	scanReport, decodeErr := (report.JSONDecoder{}).Decode(ctx, file)
+	closeErr := file.Close()
+	if decodeErr != nil {
+		return report.Report{}, decodeErr
+	}
+	if closeErr != nil {
+		return report.Report{}, fmt.Errorf("close report: %w", closeErr)
+	}
+	return scanReport, nil
 }
 
 func newVersionCommand(version string) *cobra.Command {

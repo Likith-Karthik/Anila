@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sshscope/sshscope/internal/config"
+	"github.com/sshscope/sshscope/internal/finding"
 	"github.com/sshscope/sshscope/internal/probe"
 	"github.com/sshscope/sshscope/internal/target"
 )
@@ -72,5 +73,31 @@ func TestTargetResultRejectsDuplicateProbeNames(t *testing.T) {
 	}
 	if err := result.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want duplicate probe name")
+	}
+}
+
+func TestReportRejectsDuplicateTargetEndpoints(t *testing.T) {
+	now := time.Unix(1, 0).UTC()
+	input := Report{
+		SchemaVersion: SchemaVersion, ToolVersion: "test", StartedAt: now, FinishedAt: now,
+		Configuration: config.Default(),
+		Targets:       []TargetResult{minimalTargetResult("192.0.2.1", now), minimalTargetResult("192.0.2.1", now)},
+		Errors:        []probe.Error{}, Status: probe.StatusComplete,
+	}
+	if err := input.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate target endpoint") {
+		t.Fatalf("Validate() = %v", err)
+	}
+}
+
+func TestTargetResultRejectsMissingFindingEvidence(t *testing.T) {
+	now := time.Unix(1, 0).UTC()
+	result := minimalTargetResult("192.0.2.1", now)
+	result.Findings = []finding.Finding{{
+		RuleID: "TEST-001", Title: "Test", Severity: finding.SeverityHigh, Confidence: finding.ConfidenceHigh,
+		Description: "Test description", Recommendation: "Test recommendation",
+		Evidence: []finding.EvidenceReference{{ObservationID: "missing", Probe: "kex"}},
+	}}
+	if err := result.Validate(); err == nil || !strings.Contains(err.Error(), "references missing observation") {
+		t.Fatalf("Validate() = %v", err)
 	}
 }

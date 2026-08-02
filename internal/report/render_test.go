@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,16 @@ func TestJSONRendererIsDeterministicAndDoesNotMutate(t *testing.T) {
 	if first.String() != second.String() {
 		t.Fatal("JSON output is not deterministic")
 	}
+	shuffled := input
+	shuffled.Targets = slices.Clone(input.Targets)
+	slices.Reverse(shuffled.Targets)
+	var reordered bytes.Buffer
+	if err := renderer.Render(context.Background(), &reordered, shuffled); err != nil {
+		t.Fatalf("reordered Render() = %v", err)
+	}
+	if first.String() != reordered.String() {
+		t.Fatal("JSON output depends on report collection ordering")
+	}
 	if strings.Index(first.String(), "192.0.2.1") > strings.Index(first.String(), "192.0.2.2") {
 		t.Fatalf("targets are not sorted: %s", first.String())
 	}
@@ -65,7 +76,7 @@ func TestTerminalRenderer(t *testing.T) {
 	if err := (TerminalRenderer{}).Render(context.Background(), &output, input); err != nil {
 		t.Fatalf("Render() = %v", err)
 	}
-	for _, want := range []string{"Target: 192.0.2.1", "Reachable: true", "Findings: critical=0"} {
+	for _, want := range []string{"Target: 192.0.2.1", "Reachable: true", "Severity totals: critical=0", "Exit status: 0"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("terminal output %q does not contain %q", output.String(), want)
 		}

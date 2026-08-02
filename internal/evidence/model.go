@@ -2,6 +2,7 @@
 package evidence
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,7 +123,9 @@ func (v Value) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON restores exactly one typed union member.
 func (v *Value) UnmarshalJSON(data []byte) error {
 	var encoded encodedValue
-	if err := json.Unmarshal(data, &encoded); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&encoded); err != nil {
 		return err
 	}
 	present := 0

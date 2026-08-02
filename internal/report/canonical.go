@@ -45,6 +45,7 @@ func cloneTargetResult(input TargetResult) TargetResult {
 	result.Observations = make([]evidence.Observation, len(input.Observations))
 	for index, observation := range input.Observations {
 		result.Observations[index] = evidence.CloneObservation(observation)
+		sortHostKeys(result.Observations[index].Value.HostKeys)
 	}
 	result.Findings = cloneFindings(input.Findings)
 	result.Errors = cloneErrors(input.Errors)
@@ -70,6 +71,7 @@ func cloneProbeResult(input probe.Result) probe.Result {
 	result.Observations = make([]evidence.Observation, len(input.Observations))
 	for index, observation := range input.Observations {
 		result.Observations[index] = evidence.CloneObservation(observation)
+		sortHostKeys(result.Observations[index].Value.HostKeys)
 	}
 	result.Errors = cloneErrors(input.Errors)
 	sortObservations(result.Observations)
@@ -86,8 +88,28 @@ func cloneFindings(input []finding.Finding) []finding.Finding {
 		result[index].Evidence = slices.Clone(input[index].Evidence)
 		result[index].References = slices.Clone(input[index].References)
 		result[index].AffectedValues = slices.Clone(input[index].AffectedValues)
+		sort.SliceStable(result[index].Evidence, func(i, j int) bool {
+			if result[index].Evidence[i].ObservationID != result[index].Evidence[j].ObservationID {
+				return result[index].Evidence[i].ObservationID < result[index].Evidence[j].ObservationID
+			}
+			return result[index].Evidence[i].Probe < result[index].Evidence[j].Probe
+		})
+		slices.Sort(result[index].References)
+		slices.Sort(result[index].AffectedValues)
 	}
 	return result
+}
+
+func sortHostKeys(keys []evidence.HostKey) {
+	sort.SliceStable(keys, func(i, j int) bool {
+		if keys[i].FingerprintSHA256 != keys[j].FingerprintSHA256 {
+			return keys[i].FingerprintSHA256 < keys[j].FingerprintSHA256
+		}
+		if keys[i].Algorithm != keys[j].Algorithm {
+			return keys[i].Algorithm < keys[j].Algorithm
+		}
+		return keys[i].KnownHostsStatus < keys[j].KnownHostsStatus
+	})
 }
 
 func cloneErrors(input []probe.Error) []probe.Error {

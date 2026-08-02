@@ -56,6 +56,10 @@ Presentation must not be imported by application or domain packages. Network pro
 26. Policy YAML is capped at 1 MiB, decoded with known-field enforcement, rejects aliases and multiple documents, and applies depth, node, rule, condition, string, and reference bounds before evaluation.
 27. Policy fields use a closed registry over normalized observation IDs and explicit host-key projections. The immutable engine is safe for concurrent target evaluation and findings always retain evidence provenance, including explicit absence provenance for absence-based rules.
 28. The default policy is YAML embedded into the executable and can be replaced per invocation with `--policy`. Policy loading and compilation complete before target resolution or network activity; finding-based exit enforcement remains a Phase 7 responsibility.
+29. Canonical report schema version `1` is loaded through a 64 MiB bounded, single-value, unknown-field-rejecting JSON decoder. Loaded reports undergo the same structural, target-count, uniqueness, provenance, and domain validation as newly generated reports.
+30. Canonicalization sorts copied report collections, concrete host keys, finding evidence, references, and affected values while preserving every server-ordered algorithm list. A checked-in golden report fixes the version-1 wire representation.
+31. Finding thresholds are evaluated only after report output succeeds. A failed scan takes precedence with exit 3; otherwise `critical`, `high`, and `medium` include findings at or above that severity, while `never` disables finding exits. Re-rendering a saved report reproduces the same outcome.
+32. Report comparison keys targets by resolved endpoint, findings by rule ID, and algorithm/authentication lists by set membership. Missing observations are treated as incomplete evidence rather than removals; banner and host-key changes are described without malicious attribution.
 
 ## Phased delivery
 
@@ -131,11 +135,15 @@ The current [`ssh.ClientAuthCallback`](https://pkg.go.dev/golang.org/x/crypto/ss
 
 Policies are versioned YAML documents whose conditions reference only registered normalized observation fields. Exactly one operator is permitted per condition. Regexes are compiled once when the immutable engine is constructed, and custom-policy failures stop the command before DNS or network work. The embedded default ruleset covers protocol 1, legacy/SHA-1 algorithms, CBC and obsolete ciphers, weak host keys and MACs, small RSA keys, `none`, contextual password exposure, explicit known_hosts mismatch, and informational banner disclosure without making CVE claims.
 
-### Phase 7 — Reporting and comparison
+### Phase 7 — Reporting and comparison (complete)
 
-- [ ] Finalize deterministic JSON and terminal output.
-- [ ] Implement thresholds, documented exit behavior, report loading, and semantic comparison.
-- [ ] Add golden and determinism tests.
+- [x] Finalize deterministic JSON and terminal output.
+- [x] Implement thresholds, documented exit behavior, report loading, and semantic comparison.
+- [x] Add golden and determinism tests.
+
+#### Phase 7 report and comparison boundary
+
+JSON schema version `1` is the canonical persistent representation. Terminal output is a deterministic view with findings grouped by severity, complete severity totals, partial-result warnings, and the applicable exit explanation. `report` strictly loads and re-renders saved JSON; `compare` reports target, host-key, algorithm, finding, severity, authentication-method, and banner changes. Comparison is conservative when either report lacks an observation and ignores server-list order when calculating additions and removals.
 
 ### Phase 8 — Hardening and release
 
@@ -145,15 +153,14 @@ Policies are versioned YAML documents whose conditions reference only registered
 
 ## Known limitations
 
-- Phase 6 evaluates normalized evidence and emits findings. `--fail-on` is validated and recorded, but finding-based process exit enforcement remains Phase 7 work.
-- `report` and `compare` intentionally return a phase-pending error. `policy validate` now performs the same bounded syntax and semantic validation used by scans.
+- Finding thresholds, saved-report rendering, and semantic comparison are implemented. Comparison output is terminal-only in schema version `1`; a machine-readable comparison schema has not been committed.
 - The module path is provisional.
-- Initial canonical sorting and deterministic JSON are implemented, but schema finalization and golden compatibility enforcement remain Phase 7 work.
 - `net.Resolver` materializes the operating system resolver's answer before returning it; sshscope caps all retained and copied address slices, but cannot impose an internal allocation limit on the platform resolver itself.
-- Docker-based multi-configuration OpenSSH fixtures remain later integration-hardening work; Phase 6 uses a loopback-only identification, KEXINIT, signed host-key, authentication, and default-policy fixture.
+- Docker-based multi-configuration OpenSSH fixtures remain later integration-hardening work; Phase 7 uses a loopback-only identification, KEXINIT, signed host-key, authentication, policy, saved-report, and comparison fixture.
 - A banner is untrusted self-identification and cannot establish package, patch, or backport status. A timeout establishes only that one bounded attempt timed out.
 - Banner and KEXINIT observations come from separate connections; conditional server configuration or connection-specific behavior can make them differ.
 - Host-key collection is capped at eight distinct advertised key families. Algorithms unsupported by the current SSH client or keys omitted from a changed per-connection proposal are reported as partial evidence.
 - Authentication methods are conditional observations for one username, source, and initial state. Methods available only after partial success are intentionally not exercised or reported.
 - The embedded default policy is a conservative baseline, not a substitute for organization-specific cryptographic, trust, and authentication requirements. Custom policies replace rather than merge with that baseline.
+- Comparisons intentionally do not report removals when one side lacks the relevant observation; this prevents incomplete scans from being presented as configuration changes but can hide drift until both reports contain comparable evidence.
 - The ambient development shell has no Go binary on `PATH`; local verification currently uses a checksum-verified temporary Go 1.26.5 toolchain.

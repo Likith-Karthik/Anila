@@ -68,7 +68,19 @@ func (r Report) Validate() error {
 	if !r.Status.Valid() {
 		errs = append(errs, fmt.Errorf("unsupported report status %q", r.Status))
 	}
+	if len(r.Targets) > config.AbsoluteMaximumTargets {
+		errs = append(errs, fmt.Errorf("report exceeds maximum of %d targets", config.AbsoluteMaximumTargets))
+	}
+	if r.Configuration.MaximumTargets > 0 && len(r.Targets) > r.Configuration.MaximumTargets {
+		errs = append(errs, fmt.Errorf("report target count %d exceeds configured maximum %d", len(r.Targets), r.Configuration.MaximumTargets))
+	}
+	targets := make(map[string]struct{}, len(r.Targets))
 	for i, result := range r.Targets {
+		endpoint := result.Target.Endpoint()
+		if _, exists := targets[endpoint]; exists {
+			errs = append(errs, fmt.Errorf("duplicate target endpoint %q", endpoint))
+		}
+		targets[endpoint] = struct{}{}
 		if err := result.Validate(); err != nil {
 			errs = append(errs, fmt.Errorf("target result %d: %w", i, err))
 		}
@@ -102,14 +114,35 @@ func (r TargetResult) Validate() error {
 			errs = append(errs, fmt.Errorf("probe result %q: %w", named.Name, err))
 		}
 	}
+	observations := make(map[string]struct{}, len(r.Observations))
 	for i, observation := range r.Observations {
+		key := observation.ID + "\x00" + observation.Probe
+		if _, exists := observations[key]; exists {
+			errs = append(errs, fmt.Errorf("duplicate normalized observation %q from %q", observation.ID, observation.Probe))
+		}
+		observations[key] = struct{}{}
 		if err := observation.Validate(); err != nil {
 			errs = append(errs, fmt.Errorf("normalized observation %d: %w", i, err))
 		}
 	}
+	findings := make(map[string]struct{}, len(r.Findings))
 	for i, item := range r.Findings {
+		if _, exists := findings[item.RuleID]; exists {
+			errs = append(errs, fmt.Errorf("duplicate finding rule ID %q", item.RuleID))
+		}
+		findings[item.RuleID] = struct{}{}
 		if err := item.Validate(); err != nil {
 			errs = append(errs, fmt.Errorf("finding %d: %w", i, err))
+		}
+		for _, reference := range item.Evidence {
+			key := reference.ObservationID + "\x00" + reference.Probe
+			if reference.Probe != "not_observed" {
+				if _, exists := observations[key]; !exists {
+					errs = append(errs, fmt.Errorf(
+						"finding %q references missing observation %q from %q", item.RuleID, reference.ObservationID, reference.Probe,
+					))
+				}
+			}
 		}
 	}
 	for i, probeErr := range r.Errors {

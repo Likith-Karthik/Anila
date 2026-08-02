@@ -1,16 +1,21 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sshscope/sshscope/internal/config"
+	"github.com/sshscope/sshscope/internal/evidence"
+	"github.com/sshscope/sshscope/internal/finding"
 	"github.com/sshscope/sshscope/internal/probe"
 	"github.com/sshscope/sshscope/internal/report"
 	"github.com/sshscope/sshscope/internal/scheduler"
@@ -93,6 +98,7 @@ func TestExitCode(t *testing.T) {
 	}{
 		{"success", nil, ExitSuccess},
 		{"invalid input", errors.New("bad flag"), ExitInvalidInput},
+		{"findings", WithExitCode(ExitFindings, errors.New("findings")), ExitFindings},
 		{"scan failure", WithExitCode(ExitScanFailed, errors.New("failed")), ExitScanFailed},
 		{"interrupted", fmt.Errorf("wrapped: %w", context.Canceled), ExitInterrupted},
 	}
@@ -100,6 +106,36 @@ func TestExitCode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := ExitCode(tt.err); got != tt.want {
 				t.Fatalf("ExitCode() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScanResultExitBehavior(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    probe.Status
+		threshold config.FailureThreshold
+		severity  *finding.Severity
+		want      int
+	}{
+		{name: "no findings", status: probe.StatusComplete, threshold: config.FailOnHigh, want: ExitSuccess},
+		{name: "high finding", status: probe.StatusComplete, threshold: config.FailOnHigh, severity: severityPointer(finding.SeverityHigh), want: ExitFindings},
+		{name: "medium below high", status: probe.StatusPartial, threshold: config.FailOnHigh, severity: severityPointer(finding.SeverityMedium), want: ExitSuccess},
+		{name: "never", status: probe.StatusComplete, threshold: config.FailOnNever, severity: severityPointer(finding.SeverityCritical), want: ExitSuccess},
+		{name: "failed scan takes precedence", status: probe.StatusFailed, threshold: config.FailOnHigh, severity: severityPointer(finding.SeverityHigh), want: ExitScanFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scanReport := cliTestReport()
+			scanReport.Status = tt.status
+			scanReport.Targets[0].Status = tt.status
+			scanReport.Configuration.FailureThreshold = tt.threshold
+			if tt.severity != nil {
+				scanReport.Targets[0].Findings = []finding.Finding{cliTestFinding(*tt.severity)}
+			}
+			if got := ExitCode(scanResultError(scanReport)); got != tt.want {
+				t.Fatalf("exit code = %d, want %d", got, tt.want)
 			}
 		})
 	}
@@ -138,6 +174,75 @@ rules:
 	}
 	if output != "Policy valid: 1 rules\n" {
 		t.Fatalf("output = %q", output)
+	}
+}
+
+func TestReportCommandLoadsAndRendersCanonicalReport(t *testing.T) {
+	path := writeCLIReport(t, cliTestReport())
+	output, err := ExecuteForTest(NewRootCommand("test"), "report", path)
+	if err != nil {
+		t.Fatalf("report = %v", err)
+	}
+	for _, want := range []string{"sshscope phase7-test", "Target: 192.0.2.1", "Exit status: 0"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("report output %q does not contain %q", output, want)
+		}
+	}
+	jsonOutput, err := ExecuteForTest(NewRootCommand("test"), "report", path, "--format", "json")
+	if err != nil {
+		t.Fatalf("report --format json = %v", err)
+	}
+	if !strings.Contains(jsonOutput, `"schema_version": "1"`) {
+		t.Fatalf("JSON report output = %q", jsonOutput)
+	}
+}
+
+func TestReportCommandReplaysFindingExitStatus(t *testing.T) {
+	scanReport := cliTestReport()
+	scanReport.Targets[0].Findings = []finding.Finding{cliTestFinding(finding.SeverityHigh)}
+	output, err := ExecuteForTest(NewRootCommand("test"), "report", writeCLIReport(t, scanReport))
+	if ExitCode(err) != ExitFindings {
+		t.Fatalf("report exit = %d, error=%v", ExitCode(err), err)
+	}
+	if !strings.Contains(output, "Exit status: 1") {
+		t.Fatalf("report output = %q", output)
+	}
+}
+
+func TestCompareCommandShowsSemanticChanges(t *testing.T) {
+	now := time.Unix(1, 0).UTC()
+	before := cliTestReport()
+	after := cliTestReport()
+	before.Targets[0].Observations = append(before.Targets[0].Observations, evidence.Observation{
+		ID: evidence.ObservationBannerRaw, Value: evidence.StringValue("SSH-2.0-Old"), Probe: "banner",
+		ObservedAt: now, Confidence: evidence.ConfidenceHigh,
+	})
+	after.Targets[0].Observations = append(after.Targets[0].Observations, evidence.Observation{
+		ID: evidence.ObservationBannerRaw, Value: evidence.StringValue("SSH-2.0-New"), Probe: "banner",
+		ObservedAt: now, Confidence: evidence.ConfidenceHigh,
+	})
+	output, err := ExecuteForTest(NewRootCommand("test"), "compare", writeCLIReport(t, before), writeCLIReport(t, after))
+	if err != nil {
+		t.Fatalf("compare = %v", err)
+	}
+	if !strings.Contains(output, "Banner change (self-reported, not a verified package change)") {
+		t.Fatalf("compare output = %q", output)
+	}
+}
+
+func TestReportCommandRejectsUnknownFields(t *testing.T) {
+	path := writeCLIReport(t, cliTestReport())
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() = %v", err)
+	}
+	data = bytes.Replace(data, []byte(`"tool_version": "phase7-test",`), []byte(`"unexpected": true,`), 1)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile() = %v", err)
+	}
+	_, err = ExecuteForTest(NewRootCommand("test"), "report", path)
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("report error = %v", err)
 	}
 }
 
@@ -224,3 +329,48 @@ func (p fakeNamedProbe) Name() string { return string(p) }
 func (fakeNamedProbe) Run(context.Context, target.Target) probe.Result {
 	return probe.Result{}
 }
+
+func cliTestReport() report.Report {
+	now := time.Unix(1, 0).UTC()
+	return report.Report{
+		SchemaVersion: report.SchemaVersion, ToolVersion: "phase7-test", StartedAt: now, FinishedAt: now.Add(time.Second),
+		Configuration: config.Default(), Authorization: config.Authorization{},
+		Targets: []report.TargetResult{{
+			Target: target.Target{
+				Original: "192.0.2.1", Hostname: "192.0.2.1", ResolvedIP: netip.MustParseAddr("192.0.2.1"),
+				Port: 22, IPVersion: target.Version4,
+			},
+			ProbeResults: []report.ProbeResult{},
+			Observations: []evidence.Observation{{
+				ID: evidence.ObservationTCPReachable, Value: evidence.BooleanValue(true), Probe: "tcp",
+				ObservedAt: now, Confidence: evidence.ConfidenceHigh,
+			}},
+			Findings: []finding.Finding{}, Errors: []probe.Error{}, Status: probe.StatusComplete,
+		}},
+		Errors: []probe.Error{}, Status: probe.StatusComplete,
+	}
+}
+
+func cliTestFinding(severity finding.Severity) finding.Finding {
+	return finding.Finding{
+		RuleID: "TEST-001", Title: "Test finding", Severity: severity, Confidence: finding.ConfidenceHigh,
+		Description:    "Test description",
+		Evidence:       []finding.EvidenceReference{{ObservationID: evidence.ObservationTCPReachable, Probe: "tcp"}},
+		Recommendation: "Test recommendation",
+	}
+}
+
+func writeCLIReport(t *testing.T, input report.Report) string {
+	t.Helper()
+	var data bytes.Buffer
+	if err := (report.JSONRenderer{}).Render(context.Background(), &data, input); err != nil {
+		t.Fatalf("Render() = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "report.json")
+	if err := os.WriteFile(path, data.Bytes(), 0o600); err != nil {
+		t.Fatalf("WriteFile() = %v", err)
+	}
+	return path
+}
+
+func severityPointer(value finding.Severity) *finding.Severity { return &value }
