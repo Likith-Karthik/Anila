@@ -12,7 +12,7 @@
 - No probe retries are supported initially. A future retry option would require a separate safety review.
 - The default global connection-start rate is five per second. Unlike concurrency, it cannot be set to zero to disable the safety control.
 - Cobra is the sole Phase 1 dependency because the requested command tree and validation benefit from its mature flag/usage handling. YAML and SSH dependencies are deferred until code uses them.
-- Phase 2 adds `golang.org/x/time/rate` for cancellation-aware connection-start limiting with no custom timing goroutine. YAML remains deferred. Phase 3 deliberately does not add `x/crypto/ssh` because its public API does not expose the complete ordered peer KEXINIT proposal; it remains the intended dependency for suitable later handshake work.
+- Phase 2 adds `golang.org/x/time/rate` for cancellation-aware connection-start limiting with no custom timing goroutine. YAML remains deferred. Phase 3 deliberately does not use `x/crypto/ssh` for raw KEXINIT because its public API does not expose the complete ordered proposal. Phase 4 adds `golang.org/x/crypto/ssh` for controlled signed handshakes and its `knownhosts` package for explicit trust-file comparison.
 
 ## Dependency direction
 
@@ -47,6 +47,9 @@ Presentation must not be imported by application or domain packages. Network pro
 17. The Phase 3 raw transport surface is limited to unencrypted packet framing and KEXINIT name-list decoding. It does not implement key exchange, ciphers, MACs, host-key acceptance, or authentication.
 18. Initial packets are validated before allocation, capped at 64 KiB, and checked for minimum length, eight-byte alignment, padding bounds, and a non-empty payload. Each name-list is capped at 16 KiB and 1,024 unique names.
 19. KEX collection uses a separate connection, sends one minimal client KEXINIT, reads exactly one server KEXINIT, preserves every server-supplied list order, and closes before negotiation continues.
+20. Evidence-dependent probes receive defensive copies of earlier observations through an optional probe interface; the base probe contract remains usable by independent collectors.
+21. Host-key collection selects distinct key families from observed KEXINIT evidence, caps collection at eight handshakes per endpoint, and deliberately aborts from the verified host-key callback before user authentication.
+22. A missing known_hosts input is recorded as `not_checked`. An explicitly supplied file produces `match`, `mismatch`, or `new`; none of these evidence states controls handshake acceptance or assigns severity.
 
 ## Phased delivery
 
@@ -93,11 +96,15 @@ Presentation must not be imported by application or domain packages. Network pro
 
 The current [`golang.org/x/crypto/ssh` public API](https://pkg.go.dev/golang.org/x/crypto/ssh) exposes negotiated algorithms through `NegotiatedAlgorithms`/`AlgorithmsConnMetadata` and limited negotiation failure details through `AlgorithmNegotiationError`. It does not expose all ten ordered name-lists, the peer cookie, `first_kex_packet_follows`, or the reserved field from the server's raw proposal. The package's own [`kexInitMsg` definition](https://go.googlesource.com/crypto/+/master/ssh/messages.go) is unexported. Phase 3 therefore uses a minimal bounded parser for only the pre-encryption packet and SSH_MSG_KEXINIT structures; it does not reproduce SSH cryptography.
 
-### Phase 4 — Host keys
+### Phase 4 — Host keys (complete)
 
-- [ ] Collect host keys through controlled handshakes.
-- [ ] Calculate fingerprints and meaningful key sizes.
-- [ ] Implement explicit `known_hosts` match/mismatch/unknown states.
+- [x] Collect host keys through controlled handshakes.
+- [x] Calculate fingerprints and meaningful key sizes.
+- [x] Implement explicit `known_hosts` match/mismatch/unknown states.
+
+#### Phase 4 handshake boundary
+
+Phase 4 uses [`ssh.NewClientConn`](https://pkg.go.dev/golang.org/x/crypto/ssh#NewClientConn) only until its [`HostKeyCallback`](https://pkg.go.dev/golang.org/x/crypto/ssh#HostKeyCallback) receives a signature-verified server key. The callback records the key and returns a sentinel error, ending the connection before the client requests user authentication. OpenSSH trust files are parsed by [`ssh/knownhosts`](https://pkg.go.dev/golang.org/x/crypto/ssh/knownhosts); `KeyError.Want` distinguishes a new host from a differing stored key.
 
 ### Phase 5 — Authentication surface
 
@@ -124,13 +131,14 @@ The current [`golang.org/x/crypto/ssh` public API](https://pkg.go.dev/golang.org
 
 ## Known limitations
 
-- Phase 3 collects advertised KEXINIT algorithms but not concrete host keys, authentication methods, or policy findings.
+- Phase 4 collects advertised algorithms and concrete host keys but not authentication methods or policy findings.
 - `report`, `compare`, and `policy validate` intentionally return a phase-pending error. Later-phase scan flags are recorded but do not activate unavailable probes or policy evaluation.
 - The module path is provisional.
 - Initial canonical sorting and deterministic JSON are implemented, but schema finalization and golden compatibility enforcement remain Phase 7 work.
 - Compact YAML scalar decoding and full one-operator-per-condition validation remain Phase 6 work.
 - `net.Resolver` materializes the operating system resolver's answer before returning it; sshscope caps all retained and copied address slices, but cannot impose an internal allocation limit on the platform resolver itself.
-- Docker-based multi-configuration OpenSSH fixtures remain later integration-hardening work; Phase 3 uses a loopback-only identification-and-KEXINIT protocol fixture.
+- Docker-based multi-configuration OpenSSH fixtures remain later integration-hardening work; Phase 4 uses a loopback-only identification, KEXINIT, and signed host-key fixture.
 - A banner is untrusted self-identification and cannot establish package, patch, or backport status. A timeout establishes only that one bounded attempt timed out.
 - Banner and KEXINIT observations come from separate connections; conditional server configuration or connection-specific behavior can make them differ.
+- Host-key collection is capped at eight distinct advertised key families. Algorithms unsupported by the current SSH client or keys omitted from a changed per-connection proposal are reported as partial evidence.
 - The ambient development shell has no Go binary on `PATH`; local verification currently uses a checksum-verified temporary Go 1.26.5 toolchain.

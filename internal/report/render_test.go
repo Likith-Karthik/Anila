@@ -72,6 +72,43 @@ func TestTerminalRenderer(t *testing.T) {
 	}
 }
 
+func TestTerminalRendererShowsHostKeyFingerprintAndTrustState(t *testing.T) {
+	now := time.Unix(1, 0).UTC()
+	targetResult := minimalTargetResult("192.0.2.1", now)
+	targetResult.Observations = append(targetResult.Observations, evidence.Observation{
+		ID: evidence.ObservationHostKeys,
+		Value: evidence.HostKeysValue([]evidence.HostKey{{
+			Algorithm:         "ssh-ed25519",
+			FingerprintSHA256: "SHA256:fixture",
+			PublicKeyType:     "ssh-ed25519",
+			Bits:              256,
+			KnownHostsStatus:  evidence.KnownHostsMismatch,
+		}}),
+		Probe:      "hostkey",
+		ObservedAt: now,
+		Confidence: evidence.ConfidenceHigh,
+	})
+	input := Report{
+		SchemaVersion: SchemaVersion,
+		ToolVersion:   "test",
+		StartedAt:     now,
+		FinishedAt:    now,
+		Configuration: config.Default(),
+		Targets:       []TargetResult{targetResult},
+		Errors:        []probe.Error{},
+		Status:        probe.StatusComplete,
+	}
+	var output bytes.Buffer
+	if err := (TerminalRenderer{}).Render(context.Background(), &output, input); err != nil {
+		t.Fatalf("Render() = %v", err)
+	}
+	for _, want := range []string{"Host key: SHA256:fixture", "known_hosts=mismatch", "bits=256"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("terminal output %q does not contain %q", output.String(), want)
+		}
+	}
+}
+
 func minimalTargetResult(address string, observedAt time.Time) TargetResult {
 	return TargetResult{
 		Target: target.Target{

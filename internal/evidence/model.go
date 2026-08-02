@@ -284,6 +284,12 @@ func (k HostKey) Validate() error {
 	if k.Bits < 0 {
 		errs = append(errs, errors.New("host-key size must not be negative"))
 	}
+	if k.Certificate && k.CAFingerprintSHA256 == "" {
+		errs = append(errs, errors.New("host certificate requires a CA fingerprint"))
+	}
+	if !k.Certificate && k.CAFingerprintSHA256 != "" {
+		errs = append(errs, errors.New("non-certificate host key must not have a CA fingerprint"))
+	}
 	if k.KnownHostsStatus != KnownHostsNotChecked && k.KnownHostsStatus != KnownHostsNew &&
 		k.KnownHostsStatus != KnownHostsMatch && k.KnownHostsStatus != KnownHostsMismatch {
 		errs = append(errs, fmt.Errorf("unsupported known_hosts status %q", k.KnownHostsStatus))
@@ -314,6 +320,14 @@ func StringsValue(values []string) Value {
 		values = []string{}
 	}
 	return Value{Kind: ValueStrings, Strings: values}
+}
+
+// HostKeysValue creates a host-key list value, preserving collection order.
+func HostKeysValue(keys []HostKey) Value {
+	if keys == nil {
+		keys = []HostKey{}
+	}
+	return Value{Kind: ValueHostKeys, HostKeys: keys}
 }
 
 const (

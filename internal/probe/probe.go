@@ -155,3 +155,11 @@ type Probe interface {
 	Name() string
 	Run(context.Context, target.Target) Result
 }
+
+// EvidenceAwareProbe is implemented by probes whose bounded behavior depends
+// on observations produced earlier in the ordered pipeline. Prior evidence is
+// a defensive copy and must still be treated as read-only.
+type EvidenceAwareProbe interface {
+	Probe
+	RunWithEvidence(context.Context, target.Target, []evidence.Observation) Result
+}

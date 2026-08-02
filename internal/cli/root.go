@@ -19,6 +19,7 @@ import (
 	"github.com/sshscope/sshscope/internal/evidence"
 	"github.com/sshscope/sshscope/internal/probe"
 	"github.com/sshscope/sshscope/internal/probe/banner"
+	"github.com/sshscope/sshscope/internal/probe/hostkey"
 	"github.com/sshscope/sshscope/internal/probe/kex"
 	"github.com/sshscope/sshscope/internal/probe/tcp"
 	"github.com/sshscope/sshscope/internal/report"
@@ -127,6 +128,14 @@ func newScanCommand(version string) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var knownHostsChecker hostkey.Checker
+			if cfg.KnownHostsPath != "" {
+				loadedChecker, loadErr := hostkey.NewKnownHostsChecker(cfg.KnownHostsPath)
+				if loadErr != nil {
+					return loadErr
+				}
+				knownHostsChecker = loadedChecker
+			}
 			inputs := args
 			if targetsFile != "" {
 				file, err := os.Open(targetsFile)
@@ -179,7 +188,11 @@ func newScanCommand(version string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			scanner, err := app.NewScanner(version, []probe.Probe{tcpProbe, bannerProbe, kexProbe}, evidence.StableNormalizer{})
+			hostKeyProbe, err := hostkey.New(cfg.ConnectionTimeout, &net.Dialer{}, gate, knownHostsChecker)
+			if err != nil {
+				return err
+			}
+			scanner, err := app.NewScanner(version, []probe.Probe{tcpProbe, bannerProbe, kexProbe, hostKeyProbe}, evidence.StableNormalizer{})
 			if err != nil {
 				return err
 			}
@@ -218,7 +231,7 @@ func newScanCommand(version string) *cobra.Command {
 	f.BoolVar(&ipv6, "ipv6", false, "resolve IPv6 addresses only")
 	f.StringVar(&cfg.AuditUser, "audit-user", cfg.AuditUser, "audit username setting; authentication probe begins in Phase 5")
 	f.BoolVar(&noAuth, "no-auth-probe", false, "record authentication-method probing as disabled")
-	f.StringVar(&cfg.KnownHostsPath, "known-hosts", "", "known_hosts setting; host-key comparison begins in Phase 4")
+	f.StringVar(&cfg.KnownHostsPath, "known-hosts", "", "compare collected host keys with this OpenSSH known_hosts file")
 	f.StringVar(&cfg.PolicyPath, "policy", cfg.PolicyPath, "policy setting; evaluation begins in Phase 6")
 	f.Var(newOutputFormatValue(&cfg.OutputFormat), "format", "output format: terminal or json")
 	f.StringVarP(&cfg.OutputPath, "output", "o", "", "write output to file")

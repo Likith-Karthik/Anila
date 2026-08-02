@@ -17,6 +17,19 @@ type fakeProbe struct {
 	run  func(context.Context, target.Target) probe.Result
 }
 
+type fakeEvidenceAwareProbe struct {
+	name string
+	run  func(context.Context, target.Target, []evidence.Observation) probe.Result
+}
+
+func (p fakeEvidenceAwareProbe) Name() string { return p.name }
+func (p fakeEvidenceAwareProbe) Run(ctx context.Context, item target.Target) probe.Result {
+	return p.run(ctx, item, nil)
+}
+func (p fakeEvidenceAwareProbe) RunWithEvidence(ctx context.Context, item target.Target, prior []evidence.Observation) probe.Result {
+	return p.run(ctx, item, prior)
+}
+
 func (p fakeProbe) Name() string { return p.name }
 func (p fakeProbe) Run(ctx context.Context, item target.Target) probe.Result {
 	return p.run(ctx, item)
@@ -48,6 +61,42 @@ func TestScanPreservesPartialProbeEvidence(t *testing.T) {
 	}
 	if report.Status != probe.StatusPartial || report.Targets[0].Status != probe.StatusPartial || len(report.Targets[0].Observations) != 1 {
 		t.Fatalf("Scan() = %+v", report)
+	}
+}
+
+func TestScanPassesDefensiveCopyToEvidenceAwareProbe(t *testing.T) {
+	now := time.Unix(1, 0).UTC()
+	kexProbe := fakeProbe{name: "kex", run: func(context.Context, target.Target) probe.Result {
+		return probe.Result{
+			Observations: []evidence.Observation{{
+				ID:         evidence.ObservationHostKeyAlgorithms,
+				Value:      evidence.StringsValue([]string{"ssh-ed25519"}),
+				Probe:      "kex",
+				ObservedAt: now,
+				Confidence: evidence.ConfidenceHigh,
+			}},
+			Errors: []probe.Error{},
+			Status: probe.StatusComplete,
+		}
+	}}
+	received := false
+	hostKeyProbe := fakeEvidenceAwareProbe{name: "hostkey", run: func(_ context.Context, _ target.Target, prior []evidence.Observation) probe.Result {
+		if len(prior) == 1 && prior[0].Value.Strings[0] == "ssh-ed25519" {
+			received = true
+			prior[0].Value.Strings[0] = "mutated"
+		}
+		return probe.Result{Observations: []evidence.Observation{}, Errors: []probe.Error{}, Status: probe.StatusComplete}
+	}}
+	scanner, err := NewScanner("test", []probe.Probe{kexProbe, hostKeyProbe}, evidence.StableNormalizer{})
+	if err != nil {
+		t.Fatalf("NewScanner() = %v", err)
+	}
+	scanReport, err := scanner.Scan(context.Background(), ScanRequest{Targets: []target.Target{testTarget()}, Configuration: config.Default()})
+	if err != nil {
+		t.Fatalf("Scan() = %v", err)
+	}
+	if !received || scanReport.Targets[0].Observations[0].Value.Strings[0] != "ssh-ed25519" {
+		t.Fatalf("evidence handoff received=%v, observations=%+v", received, scanReport.Targets[0].Observations)
 	}
 }
 

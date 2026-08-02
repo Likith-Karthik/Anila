@@ -99,10 +99,29 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 		} else if _, err := fmt.Fprintln(writer, "  Algorithms: not observed"); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(writer, "  Host keys: not collected in Phase 3"); err != nil {
+		hostKeys := observation(result.Observations, evidence.ObservationHostKeys)
+		if hostKeys != nil {
+			for _, key := range hostKeys.Value.HostKeys {
+				details := fmt.Sprintf("algorithm=%s type=%s known_hosts=%s", key.Algorithm, key.PublicKeyType, key.KnownHostsStatus)
+				if key.Bits > 0 {
+					details += fmt.Sprintf(" bits=%d", key.Bits)
+				}
+				if key.Certificate {
+					details += " certificate=true"
+				}
+				if _, err := fmt.Fprintf(writer, "  Host key: %s (%s)\n", key.FingerprintSHA256, details); err != nil {
+					return err
+				}
+				if key.CAFingerprintSHA256 != "" {
+					if _, err := fmt.Fprintf(writer, "    Certificate CA: %s\n", key.CAFingerprintSHA256); err != nil {
+						return err
+					}
+				}
+			}
+		} else if _, err := fmt.Fprintln(writer, "  Host keys: not observed"); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(writer, "  Authentication methods: not collected in Phase 3"); err != nil {
+		if _, err := fmt.Fprintln(writer, "  Authentication methods: not collected in Phase 4"); err != nil {
 			return err
 		}
 		for _, probeErr := range result.Errors {

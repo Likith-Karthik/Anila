@@ -130,7 +130,16 @@ func (s *ScanService) scanTarget(ctx context.Context, item target.Target, timeou
 			result.Errors = append(result.Errors, cancelled)
 			continue
 		}
-		probeResult := collector.Run(targetCtx, item)
+		probeResult := probe.Result{}
+		if aware, ok := collector.(probe.EvidenceAwareProbe); ok {
+			prior := make([]evidence.Observation, len(result.Observations))
+			for observationIndex := range result.Observations {
+				prior[observationIndex] = evidence.CloneObservation(result.Observations[observationIndex])
+			}
+			probeResult = aware.RunWithEvidence(targetCtx, item, prior)
+		} else {
+			probeResult = collector.Run(targetCtx, item)
+		}
 		result.ProbeResults = append(result.ProbeResults, report.ProbeResult{Name: collector.Name(), Result: probeResult})
 		result.Observations = append(result.Observations, probeResult.Observations...)
 		result.Errors = append(result.Errors, probeResult.Errors...)
