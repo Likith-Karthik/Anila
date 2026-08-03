@@ -60,6 +60,10 @@ Presentation must not be imported by application or domain packages. Network pro
 30. Canonicalization sorts copied report collections, concrete host keys, finding evidence, references, and affected values while preserving every server-ordered algorithm list. A checked-in golden report fixes the version-1 wire representation.
 31. Finding thresholds are evaluated only after report output succeeds. A failed scan takes precedence with exit 3; otherwise `critical`, `high`, and `medium` include findings at or above that severity, while `never` disables finding exits. Re-rendering a saved report reproduces the same outcome.
 32. Report comparison keys targets by resolved endpoint, findings by rule ID, and algorithm/authentication lists by set membership. Missing observations are treated as incomplete evidence rather than removals; banner and host-key changes are described without malicious attribution.
+33. Established connections are bound to their operation context with both an absolute deadline and a cancellation callback that wakes blocked I/O. The callback is stopped before normal connection close, and the worker pool joins every worker before returning.
+34. Explicit target-list, policy, saved-report, and known_hosts inputs are regular files with pre-parse size checks, while the target, policy, and report parsers retain independent streaming or allocation bounds. Terminal renderers escape untrusted control and bidirectional-formatting characters.
+35. Release output is a version-injected, CGO-disabled matrix for macOS, Linux, and Windows on amd64 and arm64, accompanied by checksums, first-party documentation, dependency notices, and the complete pinned dependency license texts.
+36. Docker integration publishes modern and deliberately legacy OpenSSH fixtures only on `127.0.0.1`, uses an internal container network, performs no credential-bearing authentication, and owns cleanup of containers, volumes, and temporary reports.
 
 ## Phased delivery
 
@@ -145,18 +149,26 @@ Policies are versioned YAML documents whose conditions reference only registered
 
 JSON schema version `1` is the canonical persistent representation. Terminal output is a deterministic view with findings grouped by severity, complete severity totals, partial-result warnings, and the applicable exit explanation. `report` strictly loads and re-renders saved JSON; `compare` reports target, host-key, algorithm, finding, severity, authentication-method, and banner changes. Comparison is conservative when either report lacks an observation and ignores server-list order when calculating additions and removals.
 
-### Phase 8 — Hardening and release
+### Phase 8 — Hardening and release (complete)
 
-- [ ] Audit all bounds, deadlines, cancellation paths, and goroutine ownership.
-- [ ] Run race and fuzz suites, review licenses and documentation, and build release artifacts.
-- [ ] Complete loopback-only Docker integration fixtures and commands.
+- [x] Audit all bounds, deadlines, cancellation paths, and goroutine ownership.
+- [x] Run race and fuzz suites, review licenses and documentation, and build release artifacts.
+- [x] Complete loopback-only Docker integration fixtures and commands.
+
+#### Phase 8 hardening and release boundary
+
+All application-owned input retention, packet parsing, target expansion, worker concurrency, connection starts, per-host connections, target lifetimes, and network-operation lifetimes have explicit limits. Established connections now wake on context cancellation as well as absolute deadlines, cancellation callbacks are stopped or joined before teardown, and the worker pool joins every production goroutine. Explicit local inputs are regular files with format-specific size caps, and untrusted report/network text is escaped in terminal views.
+
+The release target builds version-injected, CGO-disabled binaries for macOS, Linux, and Windows on amd64 and arm64, generates SHA-256 checksums, and bundles first- and third-party notices plus the complete reviewed dependency license texts. The race suite and all five in-memory fuzz targets passed. The modern/legacy Docker fixtures, shell syntax, loopback port publication, internal network, no-credential behavior, cleanup, and expected policy assertions are covered by integration tests. The Phase 8 development host did not provide Docker or a compatible container runtime, so the container command's live execution remains a release-CI verification requirement rather than an implementation gap.
 
 ## Known limitations
 
 - Finding thresholds, saved-report rendering, and semantic comparison are implemented. Comparison output is terminal-only in schema version `1`; a machine-readable comparison schema has not been committed.
 - The module path is provisional.
 - `net.Resolver` materializes the operating system resolver's answer before returning it; sshscope caps all retained and copied address slices, but cannot impose an internal allocation limit on the platform resolver itself.
-- Docker-based multi-configuration OpenSSH fixtures remain later integration-hardening work; Phase 7 uses a loopback-only identification, KEXINIT, signed host-key, authentication, policy, saved-report, and comparison fixture.
+- The standard library and `x/crypto/ssh` own internal DNS and cryptographic-handshake allocations; sshscope bounds the inputs and lifetimes exposed through their public APIs but cannot independently cap every internal allocation.
+- Release artifacts are checksummed but unsigned, contain no SBOM, and are not guaranteed bit-for-bit reproducible across Go toolchain versions. The Docker test base image is version-tagged rather than digest-pinned.
+- Docker integration requires a local Docker daemon and Compose plugin; the in-process integration suite remains available without Docker.
 - A banner is untrusted self-identification and cannot establish package, patch, or backport status. A timeout establishes only that one bounded attempt timed out.
 - Banner and KEXINIT observations come from separate connections; conditional server configuration or connection-specific behavior can make them differ.
 - Host-key collection is capped at eight distinct advertised key families. Algorithms unsupported by the current SSH client or keys omitted from a changed per-connection proposal are reported as partial evidence.

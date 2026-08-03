@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sshscope/sshscope/internal/app"
 	"github.com/sshscope/sshscope/internal/config"
 	"github.com/sshscope/sshscope/internal/evidence"
 	"github.com/sshscope/sshscope/internal/finding"
@@ -57,6 +58,40 @@ func TestReadTargetLines(t *testing.T) {
 				t.Fatalf("readTargetLines() = %v, %v", got, err)
 			}
 		})
+	}
+}
+
+func TestOpenBoundedRegularFile(t *testing.T) {
+	directory := t.TempDir()
+	regularPath := filepath.Join(directory, "input")
+	if err := os.WriteFile(regularPath, []byte("bounded"), 0o600); err != nil {
+		t.Fatalf("WriteFile() = %v", err)
+	}
+	file, err := openBoundedRegularFile(regularPath, "test input", 7)
+	if err != nil {
+		t.Fatalf("openBoundedRegularFile() = %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+
+	if _, err := openBoundedRegularFile(directory, "test input", 7); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("directory error = %v", err)
+	}
+	overPath := filepath.Join(directory, "oversized")
+	over, err := os.Create(overPath)
+	if err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+	if err := over.Truncate(8); err != nil {
+		_ = over.Close()
+		t.Fatalf("Truncate() = %v", err)
+	}
+	if err := over.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	if _, err := openBoundedRegularFile(overPath, "test input", 7); err == nil || !strings.Contains(err.Error(), "exceeds 7 bytes") {
+		t.Fatalf("oversized error = %v", err)
 	}
 }
 
@@ -227,6 +262,37 @@ func TestCompareCommandShowsSemanticChanges(t *testing.T) {
 	}
 	if !strings.Contains(output, "Banner change (self-reported, not a verified package change)") {
 		t.Fatalf("compare output = %q", output)
+	}
+}
+
+func TestComparisonRendererEscapesUntrustedControlCharacters(t *testing.T) {
+	reference := app.TargetReference{Original: "target\x1b[2J\u202e", Endpoint: "192.0.2.1:22"}
+	comparison := app.Comparison{
+		AddedTargets:      []app.TargetReference{reference},
+		RemovedTargets:    []app.TargetReference{},
+		HostKeyChanges:    []app.HostKeyChange{},
+		AddedAlgorithms:   []app.AlgorithmChange{{Target: reference, Field: evidence.ObservationKEXAlgorithms, Algorithms: []string{"algorithm\x1b[2J\nforged\u202e"}}},
+		RemovedAlgorithms: []app.AlgorithmChange{},
+		NewFindings:       []app.FindingReference{},
+		ResolvedFindings:  []app.FindingReference{},
+		SeverityChanges:   []app.SeverityChange{},
+		AuthMethodChanges: []app.AuthenticationMethodChange{},
+		BannerChanges:     []app.BannerChange{{Target: reference, Before: "old\x1b[2J", After: "new\nforged\u202e"}},
+	}
+	var output bytes.Buffer
+	if err := renderComparison(context.Background(), &output, comparison); err != nil {
+		t.Fatalf("renderComparison() = %v", err)
+	}
+	got := output.String()
+	for _, unsafe := range []string{"\x1b", "\u202e", "algorithm\x1b[2J\nforged"} {
+		if strings.Contains(got, unsafe) {
+			t.Fatalf("comparison output contains unescaped control text %q: %q", unsafe, got)
+		}
+	}
+	for _, escaped := range []string{`\x1b`, `\n`, `\u202e`} {
+		if !strings.Contains(got, escaped) {
+			t.Fatalf("comparison output %q does not contain escaped text %q", got, escaped)
+		}
 	}
 }
 

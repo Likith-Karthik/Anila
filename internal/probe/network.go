@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // Dialer is implemented by net.Dialer and deterministic test doubles.
@@ -15,6 +17,40 @@ type Dialer interface {
 // ConnectionGate is the scheduler contract shared by network probes.
 type ConnectionGate interface {
 	Acquire(context.Context, string) (release func(), err error)
+}
+
+// BindConnectionToContext applies the context deadline to an established
+// connection and forces blocked I/O to wake promptly if the context is
+// cancelled before that deadline. Callers must invoke the returned stop
+// function before closing a normally completed connection.
+func BindConnectionToContext(ctx context.Context, connection net.Conn) (stop func(), err error) {
+	if ctx == nil {
+		return nil, errors.New("connection context is required")
+	}
+	if connection == nil {
+		return nil, errors.New("connection is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := connection.SetDeadline(deadline); err != nil {
+			return nil, err
+		}
+	}
+	done := make(chan struct{})
+	stopAfter := context.AfterFunc(ctx, func() {
+		defer close(done)
+		_ = connection.SetDeadline(time.Now())
+	})
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			if !stopAfter() {
+				<-done
+			}
+		})
+	}, nil
 }
 
 // ClassifyNetworkError removes platform-specific details from report messages

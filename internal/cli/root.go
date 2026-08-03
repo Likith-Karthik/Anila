@@ -143,9 +143,9 @@ func newScanCommand(version string) *cobra.Command {
 			}
 			inputs := args
 			if targetsFile != "" {
-				file, err := os.Open(targetsFile)
+				file, err := openBoundedRegularFile(targetsFile, "targets file", maximumTargetFileBytes)
 				if err != nil {
-					return fmt.Errorf("open targets file: %w", err)
+					return err
 				}
 				inputs, err = readTargetLines(file, cfg.MaximumTargets)
 				closeErr := file.Close()
@@ -428,9 +428,9 @@ func loadPolicyDocument(ctx context.Context, path string) (policypkg.Document, e
 		}
 		return document, nil
 	}
-	file, err := os.Open(path)
+	file, err := openBoundedRegularFile(path, "policy", policypkg.MaximumPolicyBytes)
 	if err != nil {
-		return policypkg.Document{}, fmt.Errorf("open policy: %w", err)
+		return policypkg.Document{}, err
 	}
 	document, loadErr := (policypkg.YAMLLoader{}).Load(ctx, file)
 	closeErr := file.Close()
@@ -444,9 +444,9 @@ func loadPolicyDocument(ctx context.Context, path string) (policypkg.Document, e
 }
 
 func loadReportFile(ctx context.Context, path string) (report.Report, error) {
-	file, err := os.Open(path)
+	file, err := openBoundedRegularFile(path, "report", report.MaximumJSONBytes)
 	if err != nil {
-		return report.Report{}, fmt.Errorf("open report: %w", err)
+		return report.Report{}, err
 	}
 	scanReport, decodeErr := (report.JSONDecoder{}).Decode(ctx, file)
 	closeErr := file.Close()
@@ -457,6 +457,43 @@ func loadReportFile(ctx context.Context, path string) (report.Report, error) {
 		return report.Report{}, fmt.Errorf("close report: %w", closeErr)
 	}
 	return scanReport, nil
+}
+
+func openBoundedRegularFile(path, label string, maximumBytes int64) (*os.File, error) {
+	if path == "" {
+		return nil, fmt.Errorf("%s path is required", label)
+	}
+	if maximumBytes < 1 {
+		return nil, fmt.Errorf("%s maximum size must be positive", label)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", label, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file", label)
+	}
+	if info.Size() > maximumBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", label, maximumBytes)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", label, err)
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("stat opened %s: %w", label, err)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("%s must be a regular file", label)
+	}
+	if openedInfo.Size() > maximumBytes {
+		_ = file.Close()
+		return nil, fmt.Errorf("%s exceeds %d bytes", label, maximumBytes)
+	}
+	return file, nil
 }
 
 func newVersionCommand(version string) *cobra.Command {

@@ -58,11 +58,11 @@ func (p *Probe) Run(ctx context.Context, item target.Target) probe.Result {
 		return failed(started, probe.ClassifyNetworkError(name, err), nil)
 	}
 	defer connection.Close()
-	if deadline, ok := operationCtx.Deadline(); ok {
-		if err := connection.SetDeadline(deadline); err != nil {
-			return failed(started, probe.ClassifyNetworkError(name, err), nil)
-		}
+	stopConnectionContext, err := probe.BindConnectionToContext(operationCtx, connection)
+	if err != nil {
+		return failed(started, probe.ClassifyNetworkError(name, err), nil)
 	}
+	defer stopConnectionContext()
 
 	identification, err := ParseIdentification(connection, p.limits)
 	observedAt := time.Now().UTC()

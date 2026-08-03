@@ -150,6 +150,44 @@ func TestTerminalRendererShowsAuthenticationMethods(t *testing.T) {
 	}
 }
 
+func TestTerminalRendererEscapesUntrustedControlCharacters(t *testing.T) {
+	now := time.Unix(1, 0).UTC()
+	targetResult := minimalTargetResult("192.0.2.1", now)
+	targetResult.Target.Original = "target\x1b[2J\u202e"
+	targetResult.Observations = append(targetResult.Observations, evidence.Observation{
+		ID:         evidence.ObservationBannerRaw,
+		Value:      evidence.StringValue("SSH-2.0-test\x1b[2J\nforged\u202e"),
+		Probe:      "banner",
+		ObservedAt: now,
+		Confidence: evidence.ConfidenceHigh,
+	})
+	input := Report{
+		SchemaVersion: SchemaVersion,
+		ToolVersion:   "test\x1b[2J",
+		StartedAt:     now,
+		FinishedAt:    now,
+		Configuration: config.Default(),
+		Targets:       []TargetResult{targetResult},
+		Errors:        []probe.Error{},
+		Status:        probe.StatusComplete,
+	}
+	var output bytes.Buffer
+	if err := (TerminalRenderer{}).Render(context.Background(), &output, input); err != nil {
+		t.Fatalf("Render() = %v", err)
+	}
+	got := output.String()
+	for _, unsafe := range []string{"\x1b", "\u202e", "SSH-2.0-test\x1b[2J\nforged"} {
+		if strings.Contains(got, unsafe) {
+			t.Fatalf("terminal output contains unescaped control text %q: %q", unsafe, got)
+		}
+	}
+	for _, escaped := range []string{`\x1b`, `\n`, `\u202e`} {
+		if !strings.Contains(got, escaped) {
+			t.Fatalf("terminal output %q does not contain escaped text %q", got, escaped)
+		}
+	}
+}
+
 func minimalTargetResult(address string, observedAt time.Time) TargetResult {
 	return TargetResult{
 		Target: target.Target{

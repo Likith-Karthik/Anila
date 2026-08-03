@@ -1,12 +1,12 @@
 # sshscope
 
-`sshscope` is a low-impact, black-box SSH security auditing CLI for authorized defensive assessments. The Phase 7 build resolves a bounded scope, collects SSH transport, host-key, and optional authentication-surface evidence, evaluates a strict configurable policy, emits deterministic reports, and compares saved results without credentials.
+`sshscope` is a low-impact, black-box SSH security auditing CLI for authorized defensive assessments. The release-ready build resolves a bounded scope, collects SSH transport, host-key, and optional authentication-surface evidence, evaluates a strict configurable policy, emits deterministic reports, and compares saved results without credentials.
 
 ## Authorization and safety
 
 Only scan systems you are authorized to assess. Public IP targets produce a non-interactive notice on stderr. `--authorized` and `--scope-reference` document operator intent in the report; they never bypass target limits, timeouts, connection limits, or rate controls.
 
-The project does not implement password guessing, username enumeration, credential attacks, brute force, exploitation, authentication flooding, denial-of-service checks, Internet-wide scanning, interception, or man-in-the-middle behavior. Phase 5 performs the three initial attempts, at most eight host-key handshakes selected from advertised key types, and at most one authentication connection per endpoint. That final connection sends exactly one standard `none` request for one configured audit username and stops before any credential-bearing method. `--no-auth-probe` omits it entirely. Retries are disabled.
+The project does not implement password guessing, username enumeration, credential attacks, brute force, exploitation, authentication flooding, denial-of-service checks, Internet-wide scanning, interception, or man-in-the-middle behavior. A normal scan uses one TCP reachability attempt, one banner connection, one KEXINIT connection, at most eight host-key handshakes selected from advertised key types, and at most one authentication connection per endpoint. That final connection sends exactly one standard `none` request for one configured audit username and stops before any credential-bearing method. `--no-auth-probe` omits it entirely. Retries are disabled.
 
 ## Installation and development
 
@@ -21,9 +21,17 @@ make build
 ./bin/sshscope version
 ```
 
-The direct dependencies are Cobra for CLI behavior, `golang.org/x/time/rate` for cancellation-aware global rate limiting, `golang.org/x/crypto/ssh` for controlled SSH handshakes and OpenSSH known_hosts parsing, and `gopkg.in/yaml.v3` for strict policy decoding.
+Release artifacts for macOS, Linux, and Windows on amd64 and arm64 are built with a supplied version, embedded notices, and SHA-256 checksums:
 
-## Phase 7 examples
+```sh
+make release VERSION=1.0.0
+ls dist/
+```
+
+The direct dependencies are Cobra for CLI behavior, `golang.org/x/time/rate` for cancellation-aware global rate limiting, `golang.org/x/crypto/ssh` for controlled SSH handshakes and OpenSSH known_hosts parsing, and `gopkg.in/yaml.v3` for strict policy decoding.
+Complete dependency notices are recorded in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md); `make release` also bundles the full license texts used by the pinned module graph.
+
+## Examples
 
 ```sh
 sshscope scan example.com
@@ -42,7 +50,9 @@ sshscope report report.json --format json --output canonical.json
 sshscope compare previous.json current.json
 ```
 
-The default safety settings are 10 workers, three active connections per resolved IP, five connection starts per second, a ten-second target deadline, a four-second operation timeout, no retries, and at most 256 resolved targets. Non-bypassable ceilings cap those settings at 64 workers, 16 per-host connections, 1,000 starts per second, five minutes per target, one minute per operation, and 4,096 targets. CIDRs are rejected before expansion if they exceed the remaining scope. Target files are limited to 1 MiB and 4 KiB per line.
+The default safety settings are 10 workers, three active connections per resolved IP, five connection starts per second, a ten-second target deadline, a four-second operation timeout, no retries, and at most 256 resolved targets. Non-bypassable ceilings cap those settings at 64 workers, 16 per-host connections, 1,000 starts per second, five minutes per target, one minute per operation, and 4,096 targets. CIDRs are rejected before expansion if they exceed the remaining scope. Target files are limited to 1 MiB and 4 KiB per line; policies to 1 MiB; `known_hosts` to 16 MiB; and saved reports to 64 MiB. Explicit file inputs must be regular files.
+
+Every established network connection inherits the smaller operation/target deadline and is actively interrupted when its context is cancelled. The worker pool joins all workers before returning, and the shared connection gate releases partially acquired capacity on cancellation. Human-readable output escapes control and bidirectional-formatting characters from network and saved-report data before writing to a terminal.
 
 Use `sshscope scan --help` for the current flag reference. Finding thresholds support `critical`, `high`, `medium`, and `never`.
 
@@ -101,7 +111,7 @@ rules:
 
 To add a rule, copy this shape, choose a unique whitespace-free ID, reference a normalized field emitted in JSON, select one type-compatible operator, and run `sshscope policy validate POLICY.yaml`. The embedded baseline covers SSH version 1, legacy and SHA-1 algorithms, CBC and obsolete ciphers, weak host keys and MACs, small RSA keys, `none`, contextual password exposure, explicit known_hosts mismatch, and informational banner disclosure. It deliberately makes no banner-derived CVE claims and treats observed password authentication as context rather than an inherent vulnerability.
 
-## Phase 7 report schema and exits
+## Report schema and exits
 
 JSON schema version `1` is the canonical report. It includes schema/tool versions, timestamps, non-secret scan settings, authorization metadata, resolved targets, ordered probe results, normalized observations, findings, typed errors, and complete/partial/failed status. Durations use strings such as `"4ms"`. Target, observation, probe, concrete host-key, finding, evidence-reference, and error collections are deterministically ordered without changing server-supplied algorithm preference lists.
 
@@ -130,9 +140,12 @@ make test
 make test-race
 make integration-test
 make fuzz FUZZTIME=10s
+make docker-integration-test
 ```
 
 The integration test binds an identification, KEXINIT, signed host-key, and authentication fixture to `127.0.0.1` only. It verifies a known_hosts match, exactly one `none` attempt for the configured audit username, ordered method collection, zero credential callbacks, expected embedded-policy findings, saved-report rendering, and a no-change comparison. Golden and shuffled-input tests protect deterministic schema-version-1 JSON. Fuzz targets cover identification, packet framing, name-lists, KEXINIT payloads, and policy YAML entirely in memory and perform no network operations.
+
+`make docker-integration-test` requires Docker with the Compose plugin. It starts modern and deliberately legacy OpenSSH configurations published only on `127.0.0.1`, validates both canonical reports and their semantic comparison, and removes containers, volumes, and temporary reports on exit. The fixture network is marked internal; its legacy algorithms exist solely for loopback regression testing.
 
 ## Known limitations
 
@@ -147,5 +160,7 @@ An unauthenticated external scanner cannot reliably determine root-login configu
 A host-key change is reported as an observation or explicit trust-file mismatch—not automatic proof of an attack.
 
 Comparison suppresses apparent removals when either side lacks the corresponding observation. This avoids turning incomplete evidence into a configuration claim, but it means drift is visible only when both reports contain comparable evidence.
+
+Release binaries and checksums are not cryptographically signed, do not include an SBOM, and are not claimed to be bit-for-bit reproducible across different Go toolchains. The Docker integration base image is version-tagged rather than digest-pinned.
 
 See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the phased plan and current engineering risks.

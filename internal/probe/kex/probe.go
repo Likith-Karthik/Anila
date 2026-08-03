@@ -66,11 +66,11 @@ func (p *Probe) Run(ctx context.Context, item target.Target) probe.Result {
 		return failedResult(started, probe.ClassifyNetworkError(name, err))
 	}
 	defer connection.Close()
-	if deadline, ok := operationCtx.Deadline(); ok {
-		if err := connection.SetDeadline(deadline); err != nil {
-			return failedResult(started, probe.ClassifyNetworkError(name, err))
-		}
+	stopConnectionContext, err := probe.BindConnectionToContext(operationCtx, connection)
+	if err != nil {
+		return failedResult(started, probe.ClassifyNetworkError(name, err))
 	}
+	defer stopConnectionContext()
 	if err := writeAll(connection, []byte(clientIdentification)); err != nil {
 		return failedResult(started, classifyKEXError(err))
 	}

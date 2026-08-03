@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/sshscope/sshscope/internal/evidence"
@@ -32,11 +33,11 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(writer, "sshscope %s — scan %s\n", canonical.ToolVersion, canonical.Status); err != nil {
+	if _, err := fmt.Fprintf(writer, "sshscope %s — scan %s\n", safeTerminalText(canonical.ToolVersion), canonical.Status); err != nil {
 		return err
 	}
 	for _, reportErr := range canonical.Errors {
-		if _, err := fmt.Fprintf(writer, "Warning [%s/%s]: %s\n", reportErr.Probe, reportErr.Kind, reportErr.Message); err != nil {
+		if _, err := fmt.Fprintf(writer, "Warning [%s/%s]: %s\n", reportErr.Probe, reportErr.Kind, safeTerminalText(reportErr.Message)); err != nil {
 			return err
 		}
 	}
@@ -44,7 +45,7 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(writer, "\nTarget: %s (%s)\n", result.Target.Original, result.Target.Endpoint()); err != nil {
+		if _, err := fmt.Fprintf(writer, "\nTarget: %s (%s)\n", safeTerminalText(result.Target.Original), result.Target.Endpoint()); err != nil {
 			return err
 		}
 		reachable := observation(result.Observations, evidence.ObservationTCPReachable)
@@ -63,7 +64,7 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 		}
 		banner := observation(result.Observations, evidence.ObservationBannerRaw)
 		if banner != nil && banner.Value.String != nil {
-			if _, err := fmt.Fprintf(writer, "  Banner: %s\n", *banner.Value.String); err != nil {
+			if _, err := fmt.Fprintf(writer, "  Banner: %s\n", safeTerminalText(*banner.Value.String)); err != nil {
 				return err
 			}
 		} else if _, err := fmt.Fprintln(writer, "  Banner: not observed"); err != nil {
@@ -89,10 +90,10 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 				return err
 			}
 			if canonical.Configuration.Verbose {
-				if _, err := fmt.Fprintf(writer, "    KEX: %s\n", strings.Join(kexAlgorithms.Value.Strings, ", ")); err != nil {
+				if _, err := fmt.Fprintf(writer, "    KEX: %s\n", safeTerminalList(kexAlgorithms.Value.Strings)); err != nil {
 					return err
 				}
-				if _, err := fmt.Fprintf(writer, "    Host-key algorithms: %s\n", strings.Join(hostKeyAlgorithms.Value.Strings, ", ")); err != nil {
+				if _, err := fmt.Fprintf(writer, "    Host-key algorithms: %s\n", safeTerminalList(hostKeyAlgorithms.Value.Strings)); err != nil {
 					return err
 				}
 			}
@@ -109,16 +110,16 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 				return err
 			}
 			if canonical.Configuration.Verbose {
-				if _, err := fmt.Fprintf(writer, "    Ciphers client-to-server: %s\n", strings.Join(cipherClient.Value.Strings, ", ")); err != nil {
+				if _, err := fmt.Fprintf(writer, "    Ciphers client-to-server: %s\n", safeTerminalList(cipherClient.Value.Strings)); err != nil {
 					return err
 				}
-				if _, err := fmt.Fprintf(writer, "    Ciphers server-to-client: %s\n", strings.Join(cipherServer.Value.Strings, ", ")); err != nil {
+				if _, err := fmt.Fprintf(writer, "    Ciphers server-to-client: %s\n", safeTerminalList(cipherServer.Value.Strings)); err != nil {
 					return err
 				}
-				if _, err := fmt.Fprintf(writer, "    MACs client-to-server: %s\n", strings.Join(macClient.Value.Strings, ", ")); err != nil {
+				if _, err := fmt.Fprintf(writer, "    MACs client-to-server: %s\n", safeTerminalList(macClient.Value.Strings)); err != nil {
 					return err
 				}
-				if _, err := fmt.Fprintf(writer, "    MACs server-to-client: %s\n", strings.Join(macServer.Value.Strings, ", ")); err != nil {
+				if _, err := fmt.Fprintf(writer, "    MACs server-to-client: %s\n", safeTerminalList(macServer.Value.Strings)); err != nil {
 					return err
 				}
 			}
@@ -126,18 +127,18 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 		hostKeys := observation(result.Observations, evidence.ObservationHostKeys)
 		if hostKeys != nil {
 			for _, key := range hostKeys.Value.HostKeys {
-				details := fmt.Sprintf("algorithm=%s type=%s known_hosts=%s", key.Algorithm, key.PublicKeyType, key.KnownHostsStatus)
+				details := fmt.Sprintf("algorithm=%s type=%s known_hosts=%s", safeTerminalText(key.Algorithm), safeTerminalText(key.PublicKeyType), key.KnownHostsStatus)
 				if key.Bits > 0 {
 					details += fmt.Sprintf(" bits=%d", key.Bits)
 				}
 				if key.Certificate {
 					details += " certificate=true"
 				}
-				if _, err := fmt.Fprintf(writer, "  Host key: %s (%s)\n", key.FingerprintSHA256, details); err != nil {
+				if _, err := fmt.Fprintf(writer, "  Host key: %s (%s)\n", safeTerminalText(key.FingerprintSHA256), details); err != nil {
 					return err
 				}
 				if key.CAFingerprintSHA256 != "" {
-					if _, err := fmt.Fprintf(writer, "    Certificate CA: %s\n", key.CAFingerprintSHA256); err != nil {
+					if _, err := fmt.Fprintf(writer, "    Certificate CA: %s\n", safeTerminalText(key.CAFingerprintSHA256)); err != nil {
 						return err
 					}
 				}
@@ -152,11 +153,11 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 		} else {
 			authMethods := observation(result.Observations, evidence.ObservationAuthMethods)
 			if authMethods != nil {
-				methods := strings.Join(authMethods.Value.Strings, ", ")
+				methods := safeTerminalList(authMethods.Value.Strings)
 				if methods == "" {
 					methods = "none advertised"
 				}
-				if _, err := fmt.Fprintf(writer, "  Authentication methods (%s): %s\n", canonical.Configuration.AuditUser, methods); err != nil {
+				if _, err := fmt.Fprintf(writer, "  Authentication methods (%s): %s\n", safeTerminalText(canonical.Configuration.AuditUser), methods); err != nil {
 					return err
 				}
 			} else if _, err := fmt.Fprintln(writer, "  Authentication methods: not observed"); err != nil {
@@ -164,7 +165,7 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 			}
 		}
 		for _, probeErr := range result.Errors {
-			if _, err := fmt.Fprintf(writer, "  Warning [%s/%s]: %s\n", probeErr.Probe, probeErr.Kind, probeErr.Message); err != nil {
+			if _, err := fmt.Fprintf(writer, "  Warning [%s/%s]: %s\n", probeErr.Probe, probeErr.Kind, safeTerminalText(probeErr.Message)); err != nil {
 				return err
 			}
 		}
@@ -209,14 +210,14 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 					if item.Severity != severity {
 						continue
 					}
-					if _, err := fmt.Fprintf(writer, "    [%s] %s — %s\n", item.RuleID, item.Title, result.Target.Endpoint()); err != nil {
+					if _, err := fmt.Fprintf(writer, "    [%s] %s — %s\n", safeTerminalText(item.RuleID), safeTerminalText(item.Title), result.Target.Endpoint()); err != nil {
 						return err
 					}
-					if _, err := fmt.Fprintf(writer, "      %s\n      Recommendation: %s\n", item.Description, item.Recommendation); err != nil {
+					if _, err := fmt.Fprintf(writer, "      %s\n      Recommendation: %s\n", safeTerminalText(item.Description), safeTerminalText(item.Recommendation)); err != nil {
 						return err
 					}
 					if len(item.AffectedValues) > 0 {
-						if _, err := fmt.Fprintf(writer, "      Affected: %s\n", strings.Join(item.AffectedValues, ", ")); err != nil {
+						if _, err := fmt.Fprintf(writer, "      Affected: %s\n", safeTerminalList(item.AffectedValues)); err != nil {
 							return err
 						}
 					}
@@ -265,4 +266,17 @@ func observation(observations []evidence.Observation, id string) *evidence.Obser
 		}
 	}
 	return nil
+}
+
+func safeTerminalText(value string) string {
+	quoted := strconv.QuoteToGraphic(value)
+	return quoted[1 : len(quoted)-1]
+}
+
+func safeTerminalList(values []string) string {
+	escaped := make([]string, len(values))
+	for index, value := range values {
+		escaped[index] = safeTerminalText(value)
+	}
+	return strings.Join(escaped, ", ")
 }
