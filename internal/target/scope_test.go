@@ -50,6 +50,16 @@ func TestScopeExpansionLimit(t *testing.T) {
 	}
 }
 
+func TestScopeRejectsInvalidProgrammaticSpecificationBeforeExpansion(t *testing.T) {
+	spec := Spec{
+		Original: strings.Repeat("x", maximumOriginalTargetBytes+1),
+		Host:     "192.0.2.0/30", Port: 22, Kind: SpecCIDR, Prefix: netip.MustParsePrefix("192.0.2.0/30"),
+	}
+	if _, err := (Scope{}).Validate(context.Background(), []Spec{spec}, 8); err == nil {
+		t.Fatal("Validate() accepted oversized programmatic specification")
+	}
+}
+
 func TestIsPublic(t *testing.T) {
 	tests := []struct {
 		address string

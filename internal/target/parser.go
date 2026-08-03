@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/sshscope/sshscope/internal/config"
 )
 
 // SpecKind distinguishes names, addresses, and bounded CIDR inputs.
@@ -46,7 +48,10 @@ func (InputParser) Parse(ctx context.Context, inputs []string, defaultPort uint1
 	if defaultPort == 0 {
 		return nil, errors.New("default port must be between 1 and 65535")
 	}
-	specs := make([]Spec, 0, len(inputs))
+	if len(inputs) > config.AbsoluteMaximumTargets {
+		return nil, fmt.Errorf("target input exceeds hard limit %d", config.AbsoluteMaximumTargets)
+	}
+	specs := make([]Spec, 0, min(len(inputs), config.AbsoluteMaximumTargets))
 	for index, input := range inputs {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -68,6 +73,9 @@ func (InputParser) Parse(ctx context.Context, inputs []string, defaultPort uint1
 }
 
 func parseOne(input string, defaultPort uint16) (Spec, error) {
+	if len(input) > maximumOriginalTargetBytes {
+		return Spec{}, fmt.Errorf("target exceeds %d bytes", maximumOriginalTargetBytes)
+	}
 	if strings.Contains(input, "/") {
 		prefix, err := netip.ParsePrefix(input)
 		if err != nil {

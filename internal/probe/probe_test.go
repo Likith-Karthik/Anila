@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/sshscope/sshscope/internal/evidence"
 )
 
 func TestDurationJSONRoundTrip(t *testing.T) {
@@ -33,5 +35,20 @@ func TestResultValidate(t *testing.T) {
 	result.Status = "done"
 	if err := result.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want invalid status")
+	}
+}
+
+func TestResultValidateRejectsInconsistentStatus(t *testing.T) {
+	probeErr := Error{Kind: ErrorProtocol, Probe: "test", Message: "failed"}
+	tests := []Result{
+		{Status: StatusComplete, Errors: []Error{probeErr}},
+		{Status: StatusPartial, Errors: []Error{probeErr}},
+		{Status: StatusPartial, Observations: []evidence.Observation{}},
+		{Status: StatusFailed},
+	}
+	for _, result := range tests {
+		if err := result.Validate(); err == nil {
+			t.Fatalf("Validate(%+v) = nil", result)
+		}
 	}
 }

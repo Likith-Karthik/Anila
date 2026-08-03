@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/sshscope/sshscope/internal/config"
 )
 
 func TestInputParser(t *testing.T) {
@@ -66,5 +68,22 @@ func TestInputParserCancellation(t *testing.T) {
 	_, err := (InputParser{}).Parse(ctx, []string{"example.test"}, 22)
 	if err == nil {
 		t.Fatal("Parse() = nil error after cancellation")
+	}
+}
+
+func TestInputParserRejectsOversizedInputSlice(t *testing.T) {
+	inputs := make([]string, config.AbsoluteMaximumTargets+1)
+	for index := range inputs {
+		inputs[index] = "example.test"
+	}
+	if _, err := (InputParser{}).Parse(context.Background(), inputs, 22); err == nil || !strings.Contains(err.Error(), "hard limit") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestInputParserRejectsOversizedTargetBeforeNormalization(t *testing.T) {
+	input := strings.Repeat("A", maximumOriginalTargetBytes+1)
+	if _, err := (InputParser{}).Parse(context.Background(), []string{input}, 22); err == nil {
+		t.Fatal("Parse() accepted oversized target")
 	}
 }

@@ -19,6 +19,9 @@ const (
 	MaximumPolicyBytes = 1 << 20
 	maximumYAMLDepth   = 32
 	maximumYAMLNodes   = 8192
+	maximumYAMLLines   = 32768
+	maximumNumericRun  = 128
+	maximumFlowDepth   = 64
 )
 
 // YAMLLoader performs bounded, known-fields-only YAML decoding followed by
@@ -42,6 +45,9 @@ func (YAMLLoader) Load(ctx context.Context, reader io.Reader) (Document, error) 
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
 		return Document{}, errors.New("policy is empty")
+	}
+	if err := validateYAMLTextBounds(ctx, data); err != nil {
+		return Document{}, err
 	}
 	if err := validateYAMLShape(data); err != nil {
 		return Document{}, err
@@ -67,6 +73,48 @@ func (YAMLLoader) Load(ctx context.Context, reader io.Reader) (Document, error) 
 		return Document{}, err
 	}
 	return document, nil
+}
+
+// validateYAMLTextBounds rejects cheap-to-detect pathological inputs before
+// yaml.v3 performs scalar resolution or constructs a node graph. In
+// particular, extremely long integer-looking scalars can cause disproportionate
+// scalar-resolution work even when the root cannot be a policy document.
+func validateYAMLTextBounds(ctx context.Context, data []byte) error {
+	lines := 1
+	numericRun := 0
+	flowDepth := 0
+	for index, character := range data {
+		if index%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		if character >= '0' && character <= '9' {
+			numericRun++
+			if numericRun > maximumNumericRun {
+				return fmt.Errorf("policy YAML contains a numeric token longer than %d digits", maximumNumericRun)
+			}
+		} else {
+			numericRun = 0
+		}
+		switch character {
+		case '\n':
+			lines++
+			if lines > maximumYAMLLines {
+				return fmt.Errorf("policy YAML exceeds %d lines", maximumYAMLLines)
+			}
+		case '[', '{':
+			flowDepth++
+			if flowDepth > maximumFlowDepth {
+				return fmt.Errorf("policy YAML exceeds preliminary flow depth %d", maximumFlowDepth)
+			}
+		case ']', '}':
+			if flowDepth > 0 {
+				flowDepth--
+			}
+		}
+	}
+	return ctx.Err()
 }
 
 func validateYAMLShape(data []byte) error {

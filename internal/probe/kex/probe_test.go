@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"net"
 	"net/netip"
@@ -20,8 +21,9 @@ type allowGate struct{}
 func (allowGate) Acquire(context.Context, string) (func(), error) { return func() {}, nil }
 
 type kexPipeDialer struct {
-	payload []byte
-	invalid bool
+	payload     []byte
+	preliminary [][]byte
+	invalid     bool
 }
 
 func (d kexPipeDialer) DialContext(context.Context, string, string) (net.Conn, error) {
@@ -36,12 +38,63 @@ func (d kexPipeDialer) DialContext(context.Context, string, string) (net.Conn, e
 			_, _ = server.Write([]byte{0, 0, 0, 1, 0})
 			return
 		}
+		for _, payload := range d.preliminary {
+			packet, err := MarshalPacket(payload, bytes.NewReader(make([]byte, 256)))
+			if err != nil {
+				return
+			}
+			if _, err := server.Write(packet); err != nil {
+				return
+			}
+		}
 		packet, err := MarshalPacket(d.payload, bytes.NewReader(make([]byte, 256)))
 		if err == nil {
 			_, _ = server.Write(packet)
 		}
 	}()
 	return client, nil
+}
+
+func TestProbeAcceptsBoundedTransportMessagesBeforeKEXINIT(t *testing.T) {
+	payload, err := MarshalKEXINIT(fixtureProposal(), [16]byte{})
+	if err != nil {
+		t.Fatalf("MarshalKEXINIT() = %v", err)
+	}
+	ignore := append([]byte{messageIgnore}, encodedSSHString("notice")...)
+	debug := []byte{messageDebug, 0}
+	debug = append(debug, encodedSSHString("debug")...)
+	debug = append(debug, encodedSSHString("")...)
+	scanner, err := New(time.Second, kexPipeDialer{payload: payload, preliminary: [][]byte{ignore, debug}}, allowGate{})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	scanner.randomness = bytes.NewReader(make([]byte, 512))
+	result := scanner.Run(context.Background(), kexTarget())
+	if result.Status != probe.StatusComplete {
+		t.Fatalf("Run() = %+v", result)
+	}
+}
+
+func TestProbeRejectsMalformedTransportMessageBeforeKEXINIT(t *testing.T) {
+	payload, err := MarshalKEXINIT(fixtureProposal(), [16]byte{})
+	if err != nil {
+		t.Fatalf("MarshalKEXINIT() = %v", err)
+	}
+	scanner, err := New(time.Second, kexPipeDialer{payload: payload, preliminary: [][]byte{{messageIgnore, 0, 0, 0, 9}}}, allowGate{})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	scanner.randomness = bytes.NewReader(make([]byte, 512))
+	result := scanner.Run(context.Background(), kexTarget())
+	if len(result.Errors) != 1 || result.Errors[0].Kind != probe.ErrorInvalidPacket {
+		t.Fatalf("Run() = %+v", result)
+	}
+}
+
+func encodedSSHString(value string) []byte {
+	result := make([]byte, 4, 4+len(value))
+	binary.BigEndian.PutUint32(result, uint32(len(value)))
+	return append(result, value...)
 }
 
 func TestProbeCollectsCompleteProposal(t *testing.T) {

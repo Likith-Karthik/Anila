@@ -12,6 +12,13 @@ import (
 	"github.com/sshscope/sshscope/internal/target"
 )
 
+const (
+	maximumProbeObservations = 256
+	maximumProbeErrors       = 256
+	maximumProbeNameBytes    = 128
+	maximumProbeMessageBytes = 4 * 1024
+)
+
 // Status describes whether a probe produced all intended evidence.
 type Status string
 
@@ -71,9 +78,13 @@ func (e Error) Validate() error {
 	}
 	if e.Probe == "" {
 		errs = append(errs, errors.New("probe error source is required"))
+	} else if len(e.Probe) > maximumProbeNameBytes {
+		errs = append(errs, errors.New("probe error source is oversized"))
 	}
 	if e.Message == "" {
 		errs = append(errs, errors.New("probe error message is required"))
+	} else if len(e.Message) > maximumProbeMessageBytes {
+		errs = append(errs, errors.New("probe error message is oversized"))
 	}
 	return errors.Join(errs...)
 }
@@ -137,6 +148,26 @@ func (r Result) Validate() error {
 	}
 	if r.Duration < 0 {
 		errs = append(errs, errors.New("probe duration must not be negative"))
+	}
+	if len(r.Observations) > maximumProbeObservations {
+		errs = append(errs, fmt.Errorf("probe result exceeds %d observations", maximumProbeObservations))
+	}
+	if len(r.Errors) > maximumProbeErrors {
+		errs = append(errs, fmt.Errorf("probe result exceeds %d errors", maximumProbeErrors))
+	}
+	switch r.Status {
+	case StatusComplete:
+		if len(r.Errors) != 0 {
+			errs = append(errs, errors.New("complete probe result must not contain errors"))
+		}
+	case StatusPartial:
+		if len(r.Observations) == 0 || len(r.Errors) == 0 {
+			errs = append(errs, errors.New("partial probe result requires observations and errors"))
+		}
+	case StatusFailed:
+		if len(r.Errors) == 0 {
+			errs = append(errs, errors.New("failed probe result requires an error"))
+		}
 	}
 	for i, observation := range r.Observations {
 		if err := observation.Validate(); err != nil {

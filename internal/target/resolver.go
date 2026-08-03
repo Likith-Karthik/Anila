@@ -79,6 +79,9 @@ func (r DNSResolver) Resolve(ctx context.Context, specs []Spec, options ResolveO
 	if options.MaximumTargets > config.AbsoluteMaximumTargets {
 		return Resolution{}, fmt.Errorf("maximum targets exceeds hard limit %d", config.AbsoluteMaximumTargets)
 	}
+	if len(specs) > config.AbsoluteMaximumTargets {
+		return Resolution{}, fmt.Errorf("target specifications exceed hard limit %d", config.AbsoluteMaximumTargets)
+	}
 	if options.IPPreference != config.IPAny && options.IPPreference != config.IPv4 && options.IPPreference != config.IPv6 {
 		return Resolution{}, fmt.Errorf("unsupported IP preference %q", options.IPPreference)
 	}
@@ -120,7 +123,10 @@ func (r DNSResolver) Resolve(ctx context.Context, specs []Spec, options ResolveO
 			return Resolution{}, fmt.Errorf("target %q was not expanded before resolution", spec.Original)
 		}
 
-		filtered, fits := filterAddresses(addresses, options.IPPreference, options.MaximumTargets)
+		filtered, fits, err := filterAddresses(ctx, addresses, options.IPPreference, options.MaximumTargets)
+		if err != nil {
+			return Resolution{}, err
+		}
 		if !fits {
 			return Resolution{}, fmt.Errorf("resolved target count exceeds maximum %d", options.MaximumTargets)
 		}
@@ -173,10 +179,13 @@ func lookupNetwork(preference config.IPPreference) string {
 	}
 }
 
-func filterAddresses(addresses []netip.Addr, preference config.IPPreference, maximum int) ([]netip.Addr, bool) {
+func filterAddresses(ctx context.Context, addresses []netip.Addr, preference config.IPPreference, maximum int) ([]netip.Addr, bool, error) {
 	filtered := make([]netip.Addr, 0, min(len(addresses), maximum))
 	seen := make(map[netip.Addr]struct{}, min(len(addresses), maximum))
 	for _, address := range addresses {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
 		address = normalizeAddress(address)
 		if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() {
 			continue
@@ -188,12 +197,12 @@ func filterAddresses(addresses []netip.Addr, preference config.IPPreference, max
 			continue
 		}
 		if len(filtered) >= maximum {
-			return nil, false
+			return nil, false, nil
 		}
 		seen[address] = struct{}{}
 		filtered = append(filtered, address)
 	}
-	return filtered, true
+	return filtered, true, nil
 }
 
 func addressFamilyLabel(preference config.IPPreference) string {

@@ -30,11 +30,17 @@ func (Scope) Validate(ctx context.Context, specs []Spec, maximum int) ([]Spec, e
 	if maximum > config.AbsoluteMaximumTargets {
 		return nil, fmt.Errorf("maximum targets exceeds hard limit %d", config.AbsoluteMaximumTargets)
 	}
+	if len(specs) > config.AbsoluteMaximumTargets {
+		return nil, fmt.Errorf("target specifications exceed hard limit %d", config.AbsoluteMaximumTargets)
+	}
 	result := make([]Spec, 0, min(len(specs), maximum))
 	seen := make(map[string]struct{}, min(len(specs), maximum))
 	for _, spec := range specs {
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		if err := validateSpec(spec); err != nil {
+			return nil, fmt.Errorf("invalid target specification %q: %w", spec.Original, err)
 		}
 		switch spec.Kind {
 		case SpecCIDR:
@@ -69,6 +75,38 @@ func (Scope) Validate(ctx context.Context, specs []Spec, maximum int) ([]Spec, e
 		return nil, errors.New("scope contains no targets")
 	}
 	return result, nil
+}
+
+func validateSpec(spec Spec) error {
+	if spec.Original == "" || len(spec.Original) > maximumOriginalTargetBytes {
+		return errors.New("original target is empty or oversized")
+	}
+	if spec.Port == 0 {
+		return errors.New("target port must be between 1 and 65535")
+	}
+	if len(spec.Metadata) > maximumTargetMetadata {
+		return fmt.Errorf("target metadata exceeds %d entries", maximumTargetMetadata)
+	}
+	for key, value := range spec.Metadata {
+		if key == "" || len(key) > maximumTargetMetadataBytes || len(value) > maximumTargetMetadataBytes {
+			return errors.New("target metadata contains an empty or oversized entry")
+		}
+	}
+	switch spec.Kind {
+	case SpecHostname:
+		return validateHostname(spec.Host)
+	case SpecAddress:
+		if !spec.Address.IsValid() || spec.Address.Zone() != "" {
+			return errors.New("target address is invalid or zoned")
+		}
+	case SpecCIDR:
+		if !spec.Prefix.IsValid() || spec.Prefix.Addr().Zone() != "" || spec.Prefix != spec.Prefix.Masked() {
+			return errors.New("target CIDR is invalid, zoned, or not masked")
+		}
+	default:
+		return fmt.Errorf("unsupported specification kind %q", spec.Kind)
+	}
+	return nil
 }
 
 func prefixCount(prefix netip.Prefix, remaining int) (int, bool) {

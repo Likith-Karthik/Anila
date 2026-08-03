@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -77,7 +78,12 @@ func (s *Scalar) UnmarshalYAML(node *yaml.Node) error {
 // represent canonically.
 func (s Scalar) Validate() error {
 	switch s.Kind {
-	case ScalarString, ScalarBoolean:
+	case ScalarString:
+		if len(s.String) > maximumPolicyString || strings.ContainsRune(s.String, '\x00') {
+			return fmt.Errorf("string policy scalar exceeds %d bytes or contains NUL", maximumPolicyString)
+		}
+		return nil
+	case ScalarBoolean:
 		return nil
 	case ScalarNumber:
 		if math.IsNaN(s.Number) || math.IsInf(s.Number, 0) {

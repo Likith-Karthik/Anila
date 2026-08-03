@@ -39,6 +39,8 @@ type ScanService struct {
 	now        func() time.Time
 }
 
+const maximumProbePipeline = 32
+
 func NewScanner(version string, probes []probe.Probe, normalizer evidence.Normalizer, evaluator policy.Evaluator) (*ScanService, error) {
 	if version == "" {
 		return nil, errors.New("scanner version is required")
@@ -46,10 +48,18 @@ func NewScanner(version string, probes []probe.Probe, normalizer evidence.Normal
 	if len(probes) == 0 {
 		return nil, errors.New("at least one probe is required")
 	}
+	if len(probes) > maximumProbePipeline {
+		return nil, fmt.Errorf("probe pipeline exceeds maximum of %d", maximumProbePipeline)
+	}
+	probeNames := make(map[string]struct{}, len(probes))
 	for index, item := range probes {
 		if item == nil || item.Name() == "" {
 			return nil, fmt.Errorf("probe %d is invalid", index)
 		}
+		if _, exists := probeNames[item.Name()]; exists {
+			return nil, fmt.Errorf("duplicate probe name %q", item.Name())
+		}
+		probeNames[item.Name()] = struct{}{}
 	}
 	if normalizer == nil {
 		return nil, errors.New("evidence normalizer is required")
@@ -69,6 +79,9 @@ func (s *ScanService) Scan(ctx context.Context, request ScanRequest) (report.Rep
 	}
 	if len(request.Targets) > request.Configuration.MaximumTargets {
 		return report.Report{}, fmt.Errorf("resolved target count %d exceeds maximum %d", len(request.Targets), request.Configuration.MaximumTargets)
+	}
+	if len(request.PreparationErrors) > config.AbsoluteMaximumTargets {
+		return report.Report{}, fmt.Errorf("preparation errors exceed hard limit %d", config.AbsoluteMaximumTargets)
 	}
 	for index, item := range request.Targets {
 		if err := item.Validate(); err != nil {

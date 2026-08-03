@@ -4,6 +4,15 @@ package finding
 import (
 	"errors"
 	"fmt"
+	"strings"
+)
+
+const (
+	maximumFindingStringBytes = 16 * 1024
+	maximumFindingRuleIDBytes = 128
+	maximumFindingEvidence    = 256
+	maximumFindingReferences  = 256
+	maximumAffectedValues     = 4096
 )
 
 // Severity is finding impact; it is intentionally independent of confidence.
@@ -62,6 +71,8 @@ func (f Finding) Validate() error {
 	var errs []error
 	if f.RuleID == "" {
 		errs = append(errs, errors.New("finding rule ID is required"))
+	} else if len(f.RuleID) > maximumFindingRuleIDBytes || strings.ContainsAny(f.RuleID, "\x00\r\n\t ") {
+		errs = append(errs, errors.New("finding rule ID is oversized or contains whitespace/control characters"))
 	}
 	if f.Title == "" {
 		errs = append(errs, errors.New("finding title is required"))
@@ -80,10 +91,38 @@ func (f Finding) Validate() error {
 	}
 	if len(f.Evidence) == 0 {
 		errs = append(errs, errors.New("finding requires at least one evidence reference"))
+	} else if len(f.Evidence) > maximumFindingEvidence {
+		errs = append(errs, fmt.Errorf("finding exceeds %d evidence references", maximumFindingEvidence))
 	}
 	for i, reference := range f.Evidence {
 		if reference.ObservationID == "" || reference.Probe == "" {
 			errs = append(errs, fmt.Errorf("evidence reference %d requires observation ID and probe", i))
+		} else if len(reference.ObservationID) > maximumFindingStringBytes || len(reference.Probe) > maximumFindingStringBytes {
+			errs = append(errs, fmt.Errorf("evidence reference %d is oversized", i))
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{{"title", f.Title}, {"description", f.Description}, {"recommendation", f.Recommendation}} {
+		if len(field.value) > maximumFindingStringBytes {
+			errs = append(errs, fmt.Errorf("finding %s is oversized", field.name))
+		}
+	}
+	if len(f.References) > maximumFindingReferences {
+		errs = append(errs, fmt.Errorf("finding exceeds %d references", maximumFindingReferences))
+	}
+	if len(f.AffectedValues) > maximumAffectedValues {
+		errs = append(errs, fmt.Errorf("finding exceeds %d affected values", maximumAffectedValues))
+	}
+	for index, value := range f.References {
+		if len(value) > maximumFindingStringBytes {
+			errs = append(errs, fmt.Errorf("finding reference %d is oversized", index))
+		}
+	}
+	for index, value := range f.AffectedValues {
+		if len(value) > maximumFindingStringBytes {
+			errs = append(errs, fmt.Errorf("finding affected value %d is oversized", index))
 		}
 	}
 	return errors.Join(errs...)

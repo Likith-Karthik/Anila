@@ -129,6 +129,9 @@ func TestTerminalRendererShowsAuthenticationMethods(t *testing.T) {
 		Probe:      "auth",
 		ObservedAt: now,
 		Confidence: evidence.ConfidenceHigh,
+	}, evidence.Observation{
+		ID: evidence.ObservationAuthNoneAccepted, Value: evidence.BooleanValue(true), Probe: "auth",
+		ObservedAt: now, Confidence: evidence.ConfidenceHigh,
 	})
 	input := Report{
 		SchemaVersion: SchemaVersion,
@@ -144,9 +147,13 @@ func TestTerminalRendererShowsAuthenticationMethods(t *testing.T) {
 	if err := (TerminalRenderer{}).Render(context.Background(), &output, input); err != nil {
 		t.Fatalf("Render() = %v", err)
 	}
-	want := "Authentication methods (sshscope-audit): publickey, password"
-	if !strings.Contains(output.String(), want) {
-		t.Fatalf("terminal output %q does not contain %q", output.String(), want)
+	for _, want := range []string{
+		"Authentication without credentials: accepted for audit username",
+		"Authentication methods (sshscope-audit): publickey, password",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("terminal output %q does not contain %q", output.String(), want)
+		}
 	}
 }
 
@@ -168,8 +175,10 @@ func TestTerminalRendererEscapesUntrustedControlCharacters(t *testing.T) {
 		FinishedAt:    now,
 		Configuration: config.Default(),
 		Targets:       []TargetResult{targetResult},
-		Errors:        []probe.Error{},
-		Status:        probe.StatusComplete,
+		Errors: []probe.Error{{
+			Kind: probe.ErrorNetwork, Probe: "network\x1b[2J", Message: "failed safely", Retryable: true,
+		}},
+		Status: probe.StatusPartial,
 	}
 	var output bytes.Buffer
 	if err := (TerminalRenderer{}).Render(context.Background(), &output, input); err != nil {

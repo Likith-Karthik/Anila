@@ -46,24 +46,26 @@ Presentation must not be imported by application or domain packages. Network pro
 16. Report files are written through a same-directory temporary file with mode `0600`, synced, and atomically renamed.
 17. The Phase 3 raw transport surface is limited to unencrypted packet framing and KEXINIT name-list decoding. It does not implement key exchange, ciphers, MACs, host-key acceptance, or authentication.
 18. Initial packets are validated before allocation, capped at 64 KiB, and checked for minimum length, eight-byte alignment, padding bounds, and a non-empty payload. Each name-list is capped at 16 KiB and 1,024 unique names.
-19. KEX collection uses a separate connection, sends one minimal client KEXINIT, reads exactly one server KEXINIT, preserves every server-supplied list order, and closes before negotiation continues.
+19. KEX collection uses a separate connection, sends one minimal client KEXINIT, accepts only structurally valid and count/byte-bounded `SSH_MSG_IGNORE` or `SSH_MSG_DEBUG` messages before the server KEXINIT, preserves every server-supplied list order, and closes before negotiation continues.
 20. Evidence-dependent probes receive defensive copies of earlier observations through an optional probe interface; the base probe contract remains usable by independent collectors.
 21. Host-key collection selects distinct key families from observed KEXINIT evidence, caps collection at eight handshakes per endpoint, and deliberately aborts from the verified host-key callback before user authentication.
-22. A missing known_hosts input is recorded as `not_checked`. An explicitly supplied file produces `match`, `mismatch`, or `new`; none of these evidence states controls handshake acceptance or assigns severity.
+22. A missing known_hosts input is recorded as `not_checked`. An explicitly supplied bounded snapshot produces `match`, `mismatch`, `new`, or `revoked`; none of these evidence states controls handshake acceptance or attributes malicious intent.
 23. The Phase 5 authentication connection is pinned to a SHA-256 fingerprint collected during Phase 4. A changed key stops the connection before user authentication.
 24. The SSH client's initial `none` request is the only authentication attempt. Its post-failure callback copies the server's ordered allowed-method list and returns a sentinel error; no credential-bearing `AuthMethod` is configured.
-25. If `none` succeeds, it is recorded explicitly and the authenticated transport is immediately closed without opening a channel. `--no-auth-probe` omits the probe and its connection entirely.
+25. If `none` succeeds, a dedicated Boolean fact records acceptance independently of the server-supplied allowed-method list, and the authenticated transport is immediately closed without opening a channel. `--no-auth-probe` omits the probe and its connection entirely.
 26. Policy YAML is capped at 1 MiB, decoded with known-field enforcement, rejects aliases and multiple documents, and applies depth, node, rule, condition, string, and reference bounds before evaluation.
 27. Policy fields use a closed registry over normalized observation IDs and explicit host-key projections. The immutable engine is safe for concurrent target evaluation and findings always retain evidence provenance, including explicit absence provenance for absence-based rules.
 28. The default policy is YAML embedded into the executable and can be replaced per invocation with `--policy`. Policy loading and compilation complete before target resolution or network activity; finding-based exit enforcement remains a Phase 7 responsibility.
 29. Canonical report schema version `1` is loaded through a 64 MiB bounded, single-value, unknown-field-rejecting JSON decoder. Loaded reports undergo the same structural, target-count, uniqueness, provenance, and domain validation as newly generated reports.
 30. Canonicalization sorts copied report collections, concrete host keys, finding evidence, references, and affected values while preserving every server-ordered algorithm list. A checked-in golden report fixes the version-1 wire representation.
 31. Finding thresholds are evaluated only after report output succeeds. A failed scan takes precedence with exit 3; otherwise `critical`, `high`, and `medium` include findings at or above that severity, while `never` disables finding exits. Re-rendering a saved report reproduces the same outcome.
-32. Report comparison keys targets by resolved endpoint, findings by rule ID, and algorithm/authentication lists by set membership. Missing observations are treated as incomplete evidence rather than removals; banner and host-key changes are described without malicious attribution.
+32. Report comparison keys targets by resolved endpoint, findings by rule ID, and algorithm/authentication lists by set membership. Host-key identity drift is separated from known_hosts comparison-state drift. Missing observations are treated as incomplete evidence rather than removals; banner and host-key changes are described without malicious attribution.
 33. Established connections are bound to their operation context with both an absolute deadline and a cancellation callback that wakes blocked I/O. The callback is stopped before normal connection close, and the worker pool joins every worker before returning.
 34. Explicit target-list, policy, saved-report, and known_hosts inputs are regular files with pre-parse size checks, while the target, policy, and report parsers retain independent streaming or allocation bounds. Terminal renderers escape untrusted control and bidirectional-formatting characters.
 35. Release output is a version-injected, CGO-disabled matrix for macOS, Linux, and Windows on amd64 and arm64, accompanied by checksums, first-party documentation, dependency notices, and the complete pinned dependency license texts.
 36. Docker integration publishes modern and deliberately legacy OpenSSH fixtures only on `127.0.0.1`, uses an internal container network, performs no credential-bearing authentication, and owns cleanup of containers, volumes, and temporary reports.
+37. Known observation IDs have a fixed value shape and probe provenance. Report and probe completion states must agree with their contained errors and meaningful results, preventing malformed saved data from overstating scan completeness.
+38. Programmatic target, probe-pipeline, prior-evidence, policy-evaluation, report, finding, and nested observation inputs retain independent cardinality and byte bounds even when callers bypass the CLI's file limits.
 
 ## Phased delivery
 
@@ -114,11 +116,11 @@ The current [`golang.org/x/crypto/ssh` public API](https://pkg.go.dev/golang.org
 
 - [x] Collect host keys through controlled handshakes.
 - [x] Calculate fingerprints and meaningful key sizes.
-- [x] Implement explicit `known_hosts` match/mismatch/unknown states.
+- [x] Implement explicit `known_hosts` match/mismatch/new/revoked states.
 
 #### Phase 4 handshake boundary
 
-Phase 4 uses [`ssh.NewClientConn`](https://pkg.go.dev/golang.org/x/crypto/ssh#NewClientConn) only until its [`HostKeyCallback`](https://pkg.go.dev/golang.org/x/crypto/ssh#HostKeyCallback) receives a signature-verified server key. The callback records the key and returns a sentinel error, ending the connection before the client requests user authentication. OpenSSH trust files are parsed by [`ssh/knownhosts`](https://pkg.go.dev/golang.org/x/crypto/ssh/knownhosts); `KeyError.Want` distinguishes a new host from a differing stored key.
+Phase 4 uses [`ssh.NewClientConn`](https://pkg.go.dev/golang.org/x/crypto/ssh#NewClientConn) only until its [`HostKeyCallback`](https://pkg.go.dev/golang.org/x/crypto/ssh#HostKeyCallback) receives a signature-verified server key. The callback records the key and returns a sentinel error, ending the connection before the client requests user authentication. OpenSSH trust files are parsed by [`ssh/knownhosts`](https://pkg.go.dev/golang.org/x/crypto/ssh/knownhosts); `KeyError.Want` distinguishes a new host from a differing stored key, while `RevokedError` remains a separate operator-supplied trust state.
 
 ### Phase 5 — Authentication surface (complete)
 
@@ -147,7 +149,7 @@ Policies are versioned YAML documents whose conditions reference only registered
 
 #### Phase 7 report and comparison boundary
 
-JSON schema version `1` is the canonical persistent representation. Terminal output is a deterministic view with findings grouped by severity, complete severity totals, partial-result warnings, and the applicable exit explanation. `report` strictly loads and re-renders saved JSON; `compare` reports target, host-key, algorithm, finding, severity, authentication-method, and banner changes. Comparison is conservative when either report lacks an observation and ignores server-list order when calculating additions and removals.
+JSON schema version `1` is the canonical persistent representation. Terminal output is a deterministic view with findings grouped by severity, complete severity totals, partial-result warnings, and the applicable exit explanation. `report` strictly loads and re-renders saved JSON; `compare` reports target, host-key identity, known_hosts state, algorithm, finding, severity, authentication-method, and banner changes. Comparison is conservative when either report lacks an observation and ignores server-list order when calculating additions and removals.
 
 ### Phase 8 — Hardening and release (complete)
 
@@ -160,6 +162,21 @@ JSON schema version `1` is the canonical persistent representation. Terminal out
 All application-owned input retention, packet parsing, target expansion, worker concurrency, connection starts, per-host connections, target lifetimes, and network-operation lifetimes have explicit limits. Established connections now wake on context cancellation as well as absolute deadlines, cancellation callbacks are stopped or joined before teardown, and the worker pool joins every production goroutine. Explicit local inputs are regular files with format-specific size caps, and untrusted report/network text is escaped in terminal views.
 
 The release target builds version-injected, CGO-disabled binaries for macOS, Linux, and Windows on amd64 and arm64, generates SHA-256 checksums, and bundles first- and third-party notices plus the complete reviewed dependency license texts. The race suite and all five in-memory fuzz targets passed. The modern/legacy Docker fixtures, shell syntax, loopback port publication, internal network, no-credential behavior, cleanup, and expected policy assertions are covered by integration tests. The Phase 8 development host did not provide Docker or a compatible container runtime, so the container command's live execution remains a release-CI verification requirement rather than an implementation gap.
+
+## Defensive review — 2026-08-04
+
+The repository-wide defensive review confirmed and fixed the following issues:
+
+- KEXINIT construction now rejects oversized programmatic name-lists before joining or allocating them, and packet framing rejects oversized payloads before integer arithmetic.
+- The raw KEX reader now handles the transport messages permitted before KEXINIT without assuming the next packet must be KEXINIT, while enforcing strict structure, count, aggregate-byte, packet, and deadline bounds.
+- Target/specification collections, DNS filtering, probe pipelines, evidence-dependent probe inputs, policy aggregation, observations, host keys, findings, errors, and loaded report structures now have independent bounds. Known observation IDs also enforce their value kind and producing probe.
+- Policy loading performs a linear preflight before YAML scalar resolution and node construction, rejecting pathological numeric runs, line counts, and preliminary flow nesting. The policy fuzz target runs with one worker so a slow parser case cannot multiply CPU pressure across the host.
+- Nested JSON union members reject unknown fields, known observation domains are checked, and report/probe/target completion statuses cannot claim completeness when their errors or child results contradict it.
+- `@revoked` known_hosts entries are distinct from mismatches. The input is read through a bounded descriptor and parsed from a private snapshot, avoiding path replacement between inspection and parsing.
+- Comparison now distinguishes an unchanged host key whose known_hosts state changed from an actual key-identity change. Terminal output also escapes probe names and units in addition to previously escaped untrusted fields.
+- The default policy matches a dedicated successful-`none` Boolean rather than trusting the server-supplied method list, narrows its claim to one username/connection, and describes legacy MAC exposure without implying a successful cryptographic attack. Banner and password findings retain explicit non-vulnerability caveats.
+
+Verification on this host passed `gofmt`, `go vet ./...`, `staticcheck`, `go test -count=1 ./...`, `go test -race -count=1 ./...`, `go mod verify`, `govulncheck`, the release-style local build, the loopback integration package, and all five configured fuzz targets for ten seconds each. `govulncheck` found no reachable symbol or imported-package vulnerabilities; it reported the known module-level `x/crypto/openpgp` advisory, but sshscope does not import that package and the advisory has no fixed version. The Docker/Compose OpenSSH fixture could not be executed because no compatible container runtime was installed. The operating-system resolver still materializes its answer before sshscope can filter it, and upstream standard-library/`x/crypto/ssh` cryptographic parsing and allocations remain bounded only through those packages' public APIs and the enclosing connection deadline.
 
 ## Known limitations
 

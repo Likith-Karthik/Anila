@@ -101,3 +101,28 @@ func TestTargetResultRejectsMissingFindingEvidence(t *testing.T) {
 		t.Fatalf("Validate() = %v", err)
 	}
 }
+
+func TestReportRejectsMisleadingCompletionStatuses(t *testing.T) {
+	now := time.Unix(1, 0).UTC()
+	targetResult := minimalTargetResult("192.0.2.1", now)
+	probeErr := probe.Error{Kind: probe.ErrorProtocol, Probe: "kex", Message: "invalid"}
+	targetResult.ProbeResults = []ProbeResult{{
+		Name:   "kex",
+		Result: probe.Result{Errors: []probe.Error{probeErr}, Status: probe.StatusFailed},
+	}}
+	targetResult.Errors = []probe.Error{probeErr}
+	targetResult.Status = probe.StatusComplete
+	input := Report{
+		SchemaVersion: SchemaVersion, ToolVersion: "test", StartedAt: now, FinishedAt: now,
+		Configuration: config.Default(), Targets: []TargetResult{targetResult}, Errors: []probe.Error{}, Status: probe.StatusComplete,
+	}
+	if err := input.Validate(); err == nil || !strings.Contains(err.Error(), "complete target") {
+		t.Fatalf("Validate() = %v", err)
+	}
+
+	targetResult.Status = probe.StatusFailed
+	input.Targets = []TargetResult{targetResult}
+	if err := input.Validate(); err == nil || !strings.Contains(err.Error(), "complete report") {
+		t.Fatalf("Validate() report status = %v", err)
+	}
+}

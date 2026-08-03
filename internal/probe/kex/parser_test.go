@@ -77,6 +77,23 @@ func TestKEXINITRoundTripPreservesOrder(t *testing.T) {
 	}
 }
 
+func TestMarshalKEXINITRejectsOversizedListsBeforeJoining(t *testing.T) {
+	proposal := fixtureProposal()
+	proposal.KeyExchanges = make([]string, maximumNamesPerList+1)
+	for index := range proposal.KeyExchanges {
+		proposal.KeyExchanges[index] = "a"
+	}
+	if _, err := MarshalKEXINIT(proposal, [16]byte{}); !errors.Is(err, ErrInvalidNameList) {
+		t.Fatalf("MarshalKEXINIT() error = %v, want %v", err, ErrInvalidNameList)
+	}
+
+	proposal = fixtureProposal()
+	proposal.KeyExchanges = []string{strings.Repeat("a", maximumNameListBytes+1)}
+	if _, err := MarshalKEXINIT(proposal, [16]byte{}); !errors.Is(err, ErrInvalidNameList) {
+		t.Fatalf("MarshalKEXINIT() oversized name error = %v, want %v", err, ErrInvalidNameList)
+	}
+}
+
 func TestParseKEXINITRejectsMalformedPayloads(t *testing.T) {
 	valid, err := MarshalKEXINIT(fixtureProposal(), [16]byte{})
 	if err != nil {

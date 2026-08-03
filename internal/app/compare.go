@@ -25,6 +25,15 @@ type HostKeyChange struct {
 	After  []evidence.HostKey `json:"after"`
 }
 
+// KnownHostsStatusChange records a trust-file classification change for the
+// same observed key. It is deliberately distinct from a host-key change.
+type KnownHostsStatusChange struct {
+	Target            TargetReference           `json:"target"`
+	FingerprintSHA256 string                    `json:"fingerprint_sha256"`
+	Before            evidence.KnownHostsStatus `json:"before"`
+	After             evidence.KnownHostsStatus `json:"after"`
+}
+
 // AlgorithmChange identifies one proposal field and the algorithms changed.
 type AlgorithmChange struct {
 	Target     TargetReference `json:"target"`
@@ -55,6 +64,14 @@ type AuthenticationMethodChange struct {
 	After  []string        `json:"after"`
 }
 
+// NoneAuthenticationChange records a change in whether the initial none
+// request authenticated the configured audit username.
+type NoneAuthenticationChange struct {
+	Target TargetReference `json:"target"`
+	Before bool            `json:"before"`
+	After  bool            `json:"after"`
+}
+
 // BannerChange records a banner difference without treating it as a verified
 // package version or security event.
 type BannerChange struct {
@@ -68,12 +85,14 @@ type Comparison struct {
 	AddedTargets      []TargetReference            `json:"added_targets"`
 	RemovedTargets    []TargetReference            `json:"removed_targets"`
 	HostKeyChanges    []HostKeyChange              `json:"host_key_changes"`
+	KnownHostsChanges []KnownHostsStatusChange     `json:"known_hosts_status_changes"`
 	AddedAlgorithms   []AlgorithmChange            `json:"added_algorithms"`
 	RemovedAlgorithms []AlgorithmChange            `json:"removed_algorithms"`
 	NewFindings       []FindingReference           `json:"new_findings"`
 	ResolvedFindings  []FindingReference           `json:"resolved_findings"`
 	SeverityChanges   []SeverityChange             `json:"severity_changes"`
 	AuthMethodChanges []AuthenticationMethodChange `json:"auth_method_changes"`
+	AuthNoneChanges   []NoneAuthenticationChange   `json:"auth_none_changes"`
 	BannerChanges     []BannerChange               `json:"banner_changes"`
 }
 
@@ -144,9 +163,11 @@ func (c SemanticComparer) Compare(ctx context.Context, before, after report.Repo
 func emptyComparison() Comparison {
 	return Comparison{
 		AddedTargets: []TargetReference{}, RemovedTargets: []TargetReference{}, HostKeyChanges: []HostKeyChange{},
-		AddedAlgorithms: []AlgorithmChange{}, RemovedAlgorithms: []AlgorithmChange{}, NewFindings: []FindingReference{},
+		KnownHostsChanges: []KnownHostsStatusChange{},
+		AddedAlgorithms:   []AlgorithmChange{}, RemovedAlgorithms: []AlgorithmChange{}, NewFindings: []FindingReference{},
 		ResolvedFindings: []FindingReference{}, SeverityChanges: []SeverityChange{},
 		AuthMethodChanges: []AuthenticationMethodChange{}, BannerChanges: []BannerChange{},
+		AuthNoneChanges: []NoneAuthenticationChange{},
 	}
 }
 
@@ -166,8 +187,19 @@ func compareSharedTarget(comparison *Comparison, before, after report.TargetResu
 	reference := targetReference(after)
 	oldKeys, oldKeysObserved := hostKeys(before.Observations)
 	newKeys, newKeysObserved := hostKeys(after.Observations)
-	if oldKeysObserved && newKeysObserved && !slices.Equal(oldKeys, newKeys) {
-		comparison.HostKeyChanges = append(comparison.HostKeyChanges, HostKeyChange{Target: reference, Before: oldKeys, After: newKeys})
+	if oldKeysObserved && newKeysObserved {
+		if !slices.Equal(hostKeyFingerprints(oldKeys), hostKeyFingerprints(newKeys)) {
+			comparison.HostKeyChanges = append(comparison.HostKeyChanges, HostKeyChange{Target: reference, Before: oldKeys, After: newKeys})
+		}
+		oldStatuses := hostKeyStatuses(oldKeys)
+		newStatuses := hostKeyStatuses(newKeys)
+		for fingerprint, oldStatus := range oldStatuses {
+			if newStatus, exists := newStatuses[fingerprint]; exists && newStatus != oldStatus {
+				comparison.KnownHostsChanges = append(comparison.KnownHostsChanges, KnownHostsStatusChange{
+					Target: reference, FingerprintSHA256: fingerprint, Before: oldStatus, After: newStatus,
+				})
+			}
+		}
 	}
 
 	for _, field := range comparedAlgorithmFields {
@@ -191,6 +223,13 @@ func compareSharedTarget(comparison *Comparison, before, after report.TargetResu
 	if oldMethodsObserved && newMethodsObserved && !equalStringSets(oldMethods, newMethods) {
 		comparison.AuthMethodChanges = append(comparison.AuthMethodChanges, AuthenticationMethodChange{
 			Target: reference, Before: sortedUnique(oldMethods), After: sortedUnique(newMethods),
+		})
+	}
+	oldNoneAccepted, oldNoneObserved := scalarBooleanObservation(before.Observations, evidence.ObservationAuthNoneAccepted)
+	newNoneAccepted, newNoneObserved := scalarBooleanObservation(after.Observations, evidence.ObservationAuthNoneAccepted)
+	if oldNoneObserved && newNoneObserved && oldNoneAccepted != newNoneAccepted {
+		comparison.AuthNoneChanges = append(comparison.AuthNoneChanges, NoneAuthenticationChange{
+			Target: reference, Before: oldNoneAccepted, After: newNoneAccepted,
 		})
 	}
 	oldBanner, oldBannerObserved := scalarStringObservation(before.Observations, evidence.ObservationBannerRaw)
@@ -249,6 +288,23 @@ func hostKeys(observations []evidence.Observation) ([]evidence.HostKey, bool) {
 	return []evidence.HostKey{}, false
 }
 
+func hostKeyFingerprints(keys []evidence.HostKey) []string {
+	fingerprints := make([]string, 0, len(keys))
+	for _, key := range keys {
+		fingerprints = append(fingerprints, key.FingerprintSHA256)
+	}
+	slices.Sort(fingerprints)
+	return slices.Compact(fingerprints)
+}
+
+func hostKeyStatuses(keys []evidence.HostKey) map[string]evidence.KnownHostsStatus {
+	statuses := make(map[string]evidence.KnownHostsStatus, len(keys))
+	for _, key := range keys {
+		statuses[key.FingerprintSHA256] = key.KnownHostsStatus
+	}
+	return statuses
+}
+
 func stringObservation(observations []evidence.Observation, id string) ([]string, bool) {
 	for _, observation := range observations {
 		if observation.ID == id {
@@ -265,6 +321,15 @@ func scalarStringObservation(observations []evidence.Observation, id string) (st
 		}
 	}
 	return "", false
+}
+
+func scalarBooleanObservation(observations []evidence.Observation, id string) (bool, bool) {
+	for _, observation := range observations {
+		if observation.ID == id && observation.Value.Boolean != nil {
+			return *observation.Value.Boolean, true
+		}
+	}
+	return false, false
 }
 
 func setDifference(before, after []string) (added, removed []string) {
@@ -302,6 +367,10 @@ func sortedUnique(values []string) []string {
 }
 
 func sortComparison(comparison *Comparison) {
+	sort.SliceStable(comparison.KnownHostsChanges, func(i, j int) bool {
+		return comparison.KnownHostsChanges[i].Target.Endpoint+"\x00"+comparison.KnownHostsChanges[i].FingerprintSHA256 <
+			comparison.KnownHostsChanges[j].Target.Endpoint+"\x00"+comparison.KnownHostsChanges[j].FingerprintSHA256
+	})
 	sort.SliceStable(comparison.NewFindings, func(i, j int) bool { return findingReferenceLess(comparison.NewFindings[i], comparison.NewFindings[j]) })
 	sort.SliceStable(comparison.ResolvedFindings, func(i, j int) bool {
 		return findingReferenceLess(comparison.ResolvedFindings[i], comparison.ResolvedFindings[j])
@@ -318,16 +387,16 @@ func findingReferenceLess(left, right FindingReference) bool {
 
 // HasChanges reports whether the comparison contains any semantic change.
 func (c Comparison) HasChanges() bool {
-	return len(c.AddedTargets)+len(c.RemovedTargets)+len(c.HostKeyChanges)+len(c.AddedAlgorithms)+
+	return len(c.AddedTargets)+len(c.RemovedTargets)+len(c.HostKeyChanges)+len(c.KnownHostsChanges)+len(c.AddedAlgorithms)+
 		len(c.RemovedAlgorithms)+len(c.NewFindings)+len(c.ResolvedFindings)+len(c.SeverityChanges)+
-		len(c.AuthMethodChanges)+len(c.BannerChanges) > 0
+		len(c.AuthMethodChanges)+len(c.AuthNoneChanges)+len(c.BannerChanges) > 0
 }
 
 // Validate ensures comparison slices are initialized for stable JSON output.
 func (c Comparison) Validate() error {
-	if c.AddedTargets == nil || c.RemovedTargets == nil || c.HostKeyChanges == nil || c.AddedAlgorithms == nil ||
+	if c.AddedTargets == nil || c.RemovedTargets == nil || c.HostKeyChanges == nil || c.KnownHostsChanges == nil || c.AddedAlgorithms == nil ||
 		c.RemovedAlgorithms == nil || c.NewFindings == nil || c.ResolvedFindings == nil || c.SeverityChanges == nil ||
-		c.AuthMethodChanges == nil || c.BannerChanges == nil {
+		c.AuthMethodChanges == nil || c.AuthNoneChanges == nil || c.BannerChanges == nil {
 		return errors.New("comparison collections must not be nil")
 	}
 	return nil

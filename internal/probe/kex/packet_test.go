@@ -50,6 +50,13 @@ func TestReadPacketRejectsInvalidFraming(t *testing.T) {
 	}
 }
 
+func TestMarshalPacketRejectsOversizedPayloadBeforeFraming(t *testing.T) {
+	_, err := MarshalPacket(make([]byte, DefaultMaxPacketLength+1), bytes.NewReader(make([]byte, 32)))
+	if !errors.Is(err, ErrInvalidPacketLength) {
+		t.Fatalf("MarshalPacket() error = %v, want %v", err, ErrInvalidPacketLength)
+	}
+}
+
 func packetWithLength(length uint32) []byte {
 	data := make([]byte, 4)
 	binary.BigEndian.PutUint32(data, length)

@@ -13,6 +13,11 @@ import (
 	"github.com/sshscope/sshscope/internal/finding"
 )
 
+const (
+	maximumPolicyObservations   = 256
+	maximumPolicyAffectedValues = 4096
+)
+
 // Evaluator converts observations into findings according to a loaded policy.
 type Evaluator interface {
 	Evaluate(context.Context, []evidence.Observation) ([]finding.Finding, error)
@@ -40,6 +45,9 @@ func NewEngine(document Document) (*Engine, error) {
 func (e *Engine) Evaluate(ctx context.Context, observations []evidence.Observation) ([]finding.Finding, error) {
 	if e == nil {
 		return nil, errors.New("policy engine is required")
+	}
+	if len(observations) > maximumPolicyObservations {
+		return nil, fmt.Errorf("policy input exceeds %d observations", maximumPolicyObservations)
 	}
 	index := make(map[string][]evidence.Observation, len(observations))
 	seen := make(map[string]struct{}, len(observations))
@@ -132,7 +140,7 @@ func (e *Engine) match(ctx context.Context, condition Condition, index map[strin
 			}
 			result.matched = result.matched && childResult.matched
 			result.references = append(result.references, childResult.references...)
-			result.affected = append(result.affected, childResult.affected...)
+			result.affected = appendBounded(result.affected, childResult.affected, maximumPolicyAffectedValues)
 		}
 		return result, nil
 	}
@@ -148,7 +156,7 @@ func (e *Engine) match(ctx context.Context, condition Condition, index map[strin
 			if childResult.matched {
 				result.matched = true
 				result.references = append(result.references, childResult.references...)
-				result.affected = append(result.affected, childResult.affected...)
+				result.affected = appendBounded(result.affected, childResult.affected, maximumPolicyAffectedValues)
 			}
 		}
 		if !result.matched {
@@ -230,7 +238,7 @@ func (e *Engine) matchLeaf(condition Condition, field projection) matchResult {
 			})
 			if len(values) > 0 {
 				matchedOperands++
-				base.affected = append(base.affected, values...)
+				base.affected = appendBounded(base.affected, values, maximumPolicyAffectedValues)
 			}
 		}
 		base.matched = matchedOperands > 0
@@ -404,6 +412,17 @@ func deduplicateStrings(input []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func appendBounded(destination, values []string, maximum int) []string {
+	if len(destination) >= maximum || len(values) == 0 {
+		return destination
+	}
+	remaining := maximum - len(destination)
+	if len(values) > remaining {
+		values = values[:remaining]
+	}
+	return append(destination, values...)
 }
 
 func collectRegexes(condition Condition, destination map[string]*regexp.Regexp) {

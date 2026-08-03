@@ -6,6 +6,13 @@ import (
 	"net/netip"
 )
 
+const (
+	maximumOriginalTargetBytes = 4096
+	maximumTargetHostnameBytes = 253
+	maximumTargetMetadata      = 64
+	maximumTargetMetadataBytes = 4096
+)
+
 // IPVersion is the resolved network protocol version.
 type IPVersion string
 
@@ -35,8 +42,14 @@ func (t Target) Validate() error {
 	if t.Original == "" {
 		return fmt.Errorf("original target input is required")
 	}
+	if len(t.Original) > maximumOriginalTargetBytes {
+		return fmt.Errorf("original target input exceeds %d bytes", maximumOriginalTargetBytes)
+	}
 	if t.Hostname == "" {
 		return fmt.Errorf("target hostname is required")
+	}
+	if len(t.Hostname) > maximumTargetHostnameBytes {
+		return fmt.Errorf("target hostname exceeds %d bytes", maximumTargetHostnameBytes)
 	}
 	if !t.ResolvedIP.IsValid() {
 		return fmt.Errorf("resolved IP is required")
@@ -49,6 +62,14 @@ func (t Target) Validate() error {
 	}
 	if t.ResolvedIP.Is6() && t.IPVersion != Version6 {
 		return fmt.Errorf("IPv6 address has IP version %q", t.IPVersion)
+	}
+	if len(t.Metadata) > maximumTargetMetadata {
+		return fmt.Errorf("target metadata exceeds %d entries", maximumTargetMetadata)
+	}
+	for key, value := range t.Metadata {
+		if key == "" || len(key) > maximumTargetMetadataBytes || len(value) > maximumTargetMetadataBytes {
+			return fmt.Errorf("target metadata contains an empty or oversized entry")
+		}
 	}
 	return nil
 }

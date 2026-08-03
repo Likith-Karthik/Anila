@@ -99,7 +99,7 @@ func (p *Probe) Run(ctx context.Context, item target.Target) probe.Result {
 		return failedResult(started, classifyKEXError(err))
 	}
 
-	payload, err := ReadPacket(buffered, DefaultMaxPacketLength)
+	payload, err := readInitialKEXINIT(buffered)
 	if err != nil {
 		return failedResult(started, classifyKEXError(err))
 	}

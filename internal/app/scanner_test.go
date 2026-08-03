@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"testing"
 	"time"
@@ -230,6 +231,23 @@ func TestScanEnforcesPerTargetDeadline(t *testing.T) {
 	}
 	if scanReport.Status != probe.StatusFailed {
 		t.Fatalf("status = %s", scanReport.Status)
+	}
+}
+
+func TestNewScannerRejectsDuplicateAndOversizedProbePipelines(t *testing.T) {
+	collector := fakeProbe{name: "tcp", run: func(context.Context, target.Target) probe.Result {
+		return probe.Result{Status: probe.StatusComplete}
+	}}
+	if _, err := newScannerForTest(t, []probe.Probe{collector, collector}); err == nil {
+		t.Fatal("NewScanner() accepted duplicate probe names")
+	}
+
+	collectors := make([]probe.Probe, maximumProbePipeline+1)
+	for index := range collectors {
+		collectors[index] = fakeProbe{name: fmt.Sprintf("probe-%d", index), run: collector.run}
+	}
+	if _, err := newScannerForTest(t, collectors); err == nil {
+		t.Fatal("NewScanner() accepted an oversized probe pipeline")
 	}
 }
 

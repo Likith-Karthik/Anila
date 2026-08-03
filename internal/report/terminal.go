@@ -37,7 +37,7 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 		return err
 	}
 	for _, reportErr := range canonical.Errors {
-		if _, err := fmt.Fprintf(writer, "Warning [%s/%s]: %s\n", reportErr.Probe, reportErr.Kind, safeTerminalText(reportErr.Message)); err != nil {
+		if _, err := fmt.Fprintf(writer, "Warning [%s/%s]: %s\n", safeTerminalText(reportErr.Probe), reportErr.Kind, safeTerminalText(reportErr.Message)); err != nil {
 			return err
 		}
 	}
@@ -58,7 +58,7 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 		}
 		latency := observation(result.Observations, evidence.ObservationTCPLatency)
 		if latency != nil && latency.Value.Number != nil {
-			if _, err := fmt.Fprintf(writer, "  TCP latency: %.2f %s\n", *latency.Value.Number, latency.Value.Unit); err != nil {
+			if _, err := fmt.Fprintf(writer, "  TCP latency: %.2f %s\n", *latency.Value.Number, safeTerminalText(latency.Value.Unit)); err != nil {
 				return err
 			}
 		}
@@ -151,11 +151,22 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 				return err
 			}
 		} else {
+			noneAccepted := observation(result.Observations, evidence.ObservationAuthNoneAccepted)
+			acceptedWithoutCredentials := noneAccepted != nil && noneAccepted.Value.Boolean != nil && *noneAccepted.Value.Boolean
+			if acceptedWithoutCredentials {
+				if _, err := fmt.Fprintln(writer, "  Authentication without credentials: accepted for audit username"); err != nil {
+					return err
+				}
+			}
 			authMethods := observation(result.Observations, evidence.ObservationAuthMethods)
 			if authMethods != nil {
 				methods := safeTerminalList(authMethods.Value.Strings)
 				if methods == "" {
-					methods = "none advertised"
+					if acceptedWithoutCredentials {
+						methods = "not applicable (none accepted)"
+					} else {
+						methods = "none advertised"
+					}
 				}
 				if _, err := fmt.Fprintf(writer, "  Authentication methods (%s): %s\n", safeTerminalText(canonical.Configuration.AuditUser), methods); err != nil {
 					return err
@@ -165,7 +176,7 @@ func (r TerminalRenderer) Render(ctx context.Context, writer io.Writer, input Re
 			}
 		}
 		for _, probeErr := range result.Errors {
-			if _, err := fmt.Fprintf(writer, "  Warning [%s/%s]: %s\n", probeErr.Probe, probeErr.Kind, safeTerminalText(probeErr.Message)); err != nil {
+			if _, err := fmt.Fprintf(writer, "  Warning [%s/%s]: %s\n", safeTerminalText(probeErr.Probe), probeErr.Kind, safeTerminalText(probeErr.Message)); err != nil {
 				return err
 			}
 		}

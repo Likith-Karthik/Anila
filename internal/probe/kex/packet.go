@@ -11,8 +11,12 @@ import (
 
 const (
 	MessageKEXINIT         = 20
+	messageIgnore          = 2
+	messageDebug           = 4
 	DefaultMaxPacketLength = 64 * 1024
 	unencryptedBlockSize   = 8
+	maximumPreKEXMessages  = 8
+	maximumPreKEXBytes     = 64 * 1024
 )
 
 var (
@@ -56,11 +60,80 @@ func ReadPacket(reader io.Reader, maximum uint32) ([]byte, error) {
 	return payload, nil
 }
 
+// readInitialKEXINIT accepts the transport-layer IGNORE and DEBUG messages
+// that RFC 4253 permits at any time, while bounding both their count and total
+// payload. All other messages remain unexpected before KEXINIT.
+func readInitialKEXINIT(reader io.Reader) ([]byte, error) {
+	controlMessages := 0
+	controlBytes := 0
+	for {
+		payload, err := ReadPacket(reader, DefaultMaxPacketLength)
+		if err != nil {
+			return nil, err
+		}
+		if len(payload) == 0 {
+			return nil, ErrUnexpectedMessage
+		}
+		switch payload[0] {
+		case MessageKEXINIT:
+			return payload, nil
+		case messageIgnore, messageDebug:
+			controlMessages++
+			if controlMessages > maximumPreKEXMessages || len(payload) > maximumPreKEXBytes-controlBytes {
+				return nil, fmt.Errorf("%w: excessive messages before KEXINIT", ErrInvalidKEXINIT)
+			}
+			controlBytes += len(payload)
+			if !validPreKEXControlMessage(payload) {
+				return nil, fmt.Errorf("%w: malformed message %d before KEXINIT", ErrInvalidKEXINIT, payload[0])
+			}
+		default:
+			return nil, fmt.Errorf("%w: got message %d before KEXINIT", ErrUnexpectedMessage, payload[0])
+		}
+	}
+}
+
+func validPreKEXControlMessage(payload []byte) bool {
+	switch payload[0] {
+	case messageIgnore:
+		_, remainder, ok := consumeSSHString(payload[1:])
+		return ok && len(remainder) == 0
+	case messageDebug:
+		if len(payload) < 2 {
+			return false
+		}
+		_, remainder, ok := consumeSSHString(payload[2:])
+		if !ok {
+			return false
+		}
+		_, remainder, ok = consumeSSHString(remainder)
+		return ok && len(remainder) == 0
+	default:
+		return false
+	}
+}
+
+func consumeSSHString(input []byte) ([]byte, []byte, bool) {
+	if len(input) < 4 {
+		return nil, nil, false
+	}
+	length := binary.BigEndian.Uint32(input[:4])
+	if uint64(length) > uint64(len(input)-4) {
+		return nil, nil, false
+	}
+	end := 4 + int(length)
+	return input[4:end], input[end:], true
+}
+
 // MarshalPacket frames one unencrypted SSH payload with random padding. It is
 // used only for the client's initial KEXINIT and deterministic test fixtures.
 func MarshalPacket(payload []byte, randomness io.Reader) ([]byte, error) {
 	if len(payload) == 0 {
 		return nil, errors.New("SSH packet payload is empty")
+	}
+	// Reject before any size arithmetic so even an artificially huge caller
+	// slice cannot overflow int calculations below.
+	if len(payload) > DefaultMaxPacketLength {
+		return nil, ErrInvalidPacketLength
 	}
 	if randomness == nil {
 		return nil, errors.New("SSH packet padding source is required")

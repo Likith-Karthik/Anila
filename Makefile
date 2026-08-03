@@ -43,7 +43,7 @@ fuzz:
 	$(GO) test ./internal/probe/kex -run='^$$' -fuzz=FuzzReadPacket -fuzztime=$(FUZZTIME)
 	$(GO) test ./internal/probe/kex -run='^$$' -fuzz=FuzzParseNameList -fuzztime=$(FUZZTIME)
 	$(GO) test ./internal/probe/kex -run='^$$' -fuzz=FuzzParseKEXINIT -fuzztime=$(FUZZTIME)
-	$(GO) test ./internal/policy -run='^$$' -fuzz=FuzzYAMLLoader -fuzztime=$(FUZZTIME)
+	$(GO) test ./internal/policy -run='^$$' -fuzz=FuzzYAMLLoader -fuzztime=$(FUZZTIME) -parallel=1
 
 integration-test:
 	$(GO) test -count=1 ./integration

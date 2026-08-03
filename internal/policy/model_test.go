@@ -2,6 +2,7 @@ package policy
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/sshscope/sshscope/internal/finding"
@@ -15,6 +16,9 @@ func TestScalarValidate(t *testing.T) {
 	}
 	if err := NumberScalar(math.Inf(1)).Validate(); err == nil {
 		t.Fatal("Validate(infinity) = nil")
+	}
+	if err := StringScalar(strings.Repeat("a", maximumPolicyString+1)).Validate(); err == nil {
+		t.Fatal("Validate(oversized string) = nil")
 	}
 }
 

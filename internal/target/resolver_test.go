@@ -15,6 +15,13 @@ type fakeLookup struct {
 	errors    map[string]error
 }
 
+type cancellingLookup struct{ cancel context.CancelFunc }
+
+func (l cancellingLookup) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
+	l.cancel()
+	return []netip.Addr{{}, {}, {}}, nil
+}
+
 func (f fakeLookup) LookupNetIP(_ context.Context, _ string, host string) ([]netip.Addr, error) {
 	if err := f.errors[host]; err != nil {
 		return nil, err
@@ -76,5 +83,17 @@ func TestDNSResolverEnforcesPostResolutionLimit(t *testing.T) {
 	_, err = resolver.Resolve(context.Background(), specs, ResolveOptions{IPPreference: config.IPAny, MaximumTargets: 1})
 	if err == nil || !strings.Contains(err.Error(), "exceeds maximum") {
 		t.Fatalf("Resolve() error = %v", err)
+	}
+}
+
+func TestDNSResolverHonorsCancellationWhileFilteringLookupResults(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	resolver := DNSResolver{Lookup: cancellingLookup{cancel: cancel}}
+	specs, err := (InputParser{}).Parse(context.Background(), []string{"example.test"}, 22)
+	if err != nil {
+		t.Fatalf("Parse() = %v", err)
+	}
+	if _, err := resolver.Resolve(ctx, specs, ResolveOptions{IPPreference: config.IPAny, MaximumTargets: 4}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Resolve() = %v, want context cancellation", err)
 	}
 }

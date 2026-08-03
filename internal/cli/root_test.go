@@ -268,15 +268,19 @@ func TestCompareCommandShowsSemanticChanges(t *testing.T) {
 func TestComparisonRendererEscapesUntrustedControlCharacters(t *testing.T) {
 	reference := app.TargetReference{Original: "target\x1b[2J\u202e", Endpoint: "192.0.2.1:22"}
 	comparison := app.Comparison{
-		AddedTargets:      []app.TargetReference{reference},
-		RemovedTargets:    []app.TargetReference{},
-		HostKeyChanges:    []app.HostKeyChange{},
+		AddedTargets:   []app.TargetReference{reference},
+		RemovedTargets: []app.TargetReference{},
+		HostKeyChanges: []app.HostKeyChange{},
+		KnownHostsChanges: []app.KnownHostsStatusChange{{
+			Target: reference, FingerprintSHA256: "SHA256:key\x1b[2J", Before: evidence.KnownHostsMismatch, After: evidence.KnownHostsMatch,
+		}},
 		AddedAlgorithms:   []app.AlgorithmChange{{Target: reference, Field: evidence.ObservationKEXAlgorithms, Algorithms: []string{"algorithm\x1b[2J\nforged\u202e"}}},
 		RemovedAlgorithms: []app.AlgorithmChange{},
 		NewFindings:       []app.FindingReference{},
 		ResolvedFindings:  []app.FindingReference{},
 		SeverityChanges:   []app.SeverityChange{},
 		AuthMethodChanges: []app.AuthenticationMethodChange{},
+		AuthNoneChanges:   []app.NoneAuthenticationChange{},
 		BannerChanges:     []app.BannerChange{{Target: reference, Before: "old\x1b[2J", After: "new\nforged\u202e"}},
 	}
 	var output bytes.Buffer
