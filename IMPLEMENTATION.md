@@ -66,6 +66,7 @@ Presentation must not be imported by application or domain packages. Network pro
 36. Docker integration publishes modern and deliberately legacy OpenSSH fixtures only on `127.0.0.1`, uses an internal container network, performs no credential-bearing authentication, and owns cleanup of containers, volumes, and temporary reports.
 37. Known observation IDs have a fixed value shape and probe provenance. Report and probe completion states must agree with their contained errors and meaningful results, preventing malformed saved data from overstating scan completeness.
 38. Programmatic target, probe-pipeline, prior-evidence, policy-evaluation, report, finding, and nested observation inputs retain independent cardinality and byte bounds even when callers bypass the CLI's file limits.
+39. The optional web UI is served by `cmd/sshscope-web` on an explicit HTTP listen address. It calls the same internal scanner pipeline in-process, serializes scans, requires operator authorization confirmation, exposes cancellation through context, returns strict canonical JSON, and serves static React assets without accepting credentials or adding offensive behavior.
 
 ## Phased delivery
 
@@ -186,6 +187,7 @@ Verification on this host passed `gofmt`, `go vet ./...`, `staticcheck`, `go tes
 - The standard library and `x/crypto/ssh` own internal DNS and cryptographic-handshake allocations; sshscope bounds the inputs and lifetimes exposed through their public APIs but cannot independently cap every internal allocation.
 - Release artifacts are checksummed but unsigned, contain no SBOM, and are not guaranteed bit-for-bit reproducible across Go toolchain versions. The Docker test base image is version-tagged rather than digest-pinned.
 - Docker integration requires a local Docker daemon and Compose plugin; the in-process integration suite remains available without Docker.
+- The web UI is port-deployable but intentionally minimal: it is not authenticated, not TLS-terminating, and defaults to `127.0.0.1`. Bind it to `0.0.0.0` only behind appropriate local network controls. Custom policy upload and report comparison remain CLI-first.
 - A banner is untrusted self-identification and cannot establish package, patch, or backport status. A timeout establishes only that one bounded attempt timed out.
 - Banner and KEXINIT observations come from separate connections; conditional server configuration or connection-specific behavior can make them differ.
 - Host-key collection is capped at eight distinct advertised key families. Algorithms unsupported by the current SSH client or keys omitted from a changed per-connection proposal are reported as partial evidence.

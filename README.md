@@ -21,6 +21,24 @@ make build
 ./bin/sshscope version
 ```
 
+## Web UI
+
+The optional web UI is a local HTTP app that serves the scanner controls and JSON report viewer on a port. It uses the same Go scanner pipeline as the CLI, keeps the same bounded target expansion, deadlines, rate limits, context cancellation, and credentialless authentication behavior, and requires an authorization confirmation before a scan starts.
+
+```sh
+make web-build
+./bin/sshscope-web -listen 127.0.0.1:8080
+open http://127.0.0.1:8080
+```
+
+For a development loop:
+
+```sh
+make web-dev
+```
+
+The default bind address is loopback-only. To expose it from a container or another host, pass an explicit address such as `-listen 0.0.0.0:8080` and put normal network access controls in front of it. The web UI does not add credentials, brute force, exploitation, or a hosted backend; scans run in the `sshscope-web` process and reports can be downloaded as canonical JSON from the browser.
+
 Release artifacts for macOS, Linux, and Windows on amd64 and arm64 are built with a supplied version, embedded notices, and SHA-256 checksums:
 
 ```sh
@@ -29,6 +47,7 @@ ls dist/
 ```
 
 The direct dependencies are Cobra for CLI behavior, `golang.org/x/time/rate` for cancellation-aware global rate limiting, `golang.org/x/crypto/ssh` for controlled SSH handshakes and OpenSSH known_hosts parsing, and `gopkg.in/yaml.v3` for strict policy decoding.
+The optional web UI adds React, Vite, Tailwind CSS, and Lucide React as frontend-only dependencies.
 Complete dependency notices are recorded in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md); `make release` also bundles the full license texts used by the pinned module graph.
 
 ## Examples

@@ -1,15 +1,34 @@
 GO ?= go
+PNPM ?= pnpm
 BINARY := bin/sshscope
+WEB_BINARY := bin/sshscope-web
 FUZZTIME ?= 10s
 VERSION ?= dev
 BUILD_FLAGS := -trimpath -buildvcs=false
 LDFLAGS := -s -w -X main.version=$(VERSION)
 DIST := dist
+WEB_FRONTEND := cmd/sshscope-web/frontend
 
-.PHONY: build release release-licenses test test-race fuzz integration-test docker-integration-test lint clean
+.PHONY: build web-build web-dev frontend-install frontend-check frontend-build release release-licenses test test-race fuzz integration-test docker-integration-test lint clean
 
 build:
 	$(GO) build $(BUILD_FLAGS) -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/sshscope
+
+web-build: frontend-build
+	$(GO) build $(BUILD_FLAGS) -ldflags '$(LDFLAGS)' -o $(WEB_BINARY) ./cmd/sshscope-web
+
+web-dev: frontend-build
+	$(GO) run -ldflags '-X main.version=$(VERSION)' ./cmd/sshscope-web -listen 127.0.0.1:8080
+
+frontend-install:
+	cd $(WEB_FRONTEND) && $(PNPM) install
+
+frontend-check:
+	cd $(WEB_FRONTEND) && $(PNPM) run check
+
+frontend-build:
+	cd $(WEB_FRONTEND) && $(PNPM) install --frozen-lockfile
+	cd $(WEB_FRONTEND) && $(PNPM) run build
 
 release: release-licenses
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(BUILD_FLAGS) -ldflags '$(LDFLAGS)' -o $(DIST)/sshscope-$(VERSION)-darwin-amd64 ./cmd/sshscope
@@ -58,4 +77,6 @@ lint:
 clean:
 	$(GO) clean -testcache
 	$(RM) $(BINARY)
+	$(RM) $(WEB_BINARY)
 	$(RM) -r $(DIST)
+	$(RM) -r $(WEB_FRONTEND)/dist
